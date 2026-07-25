@@ -68,6 +68,24 @@
       RREAD_MIN: 1.1, RREAD_MAX: 1.8, // L2 reading multiplier (reading stage only)
       DELIB_MIN: 0.7, DELIB_MAX: 1.3, // deliberateness D
     },
+
+    // -- BATCH: pacing for the OPT-IN auto-run (walk the current page of jobs). This is
+    //    the SessionEnvelope layer from CLAUDE.md — a person browsing a list dwells on
+    //    each posting, takes irregular multi-second-to-minute breaks, and never machine-
+    //    guns. Every number is a prior. Gaps are deliberately generous (browsing, not a
+    //    committed keypress) so the run stays firmly human-paced. --
+    BATCH: {
+      GAP_MULTIPLIER: 1.7, // browse dwell runs a bit longer than a committed advance
+      LONGIDLE_PROB: 0.20, // per job: chance of a heavy-tailed "distraction" idle
+      LONGIDLE_MEDIAN_MS: 17000, // prior: median long idle (~17 s)
+      LONGIDLE_SIGMA: 0.75, // heavy right tail — occasional minute-plus idle
+      LONGIDLE_CAP_MS: 120000, // ceiling on a single idle (2 min)
+      MIN_GAP_MS: 6000, // never faster than 6 s between jobs in a batch
+      MAX_GAP_MS: 90000, // ceiling on a single inter-job gap
+      MODALITY_KEYBOARD_PROB: 0.45, // fraction of advances that add keyboard-style events
+      MAX_JOBS: 40, // hard cap on jobs processed per auto-run
+      MAX_SESSION_MS: 900000, // hard cap on auto-run duration (15 min)
+    },
   };
 
   // ===== RNG (mulberry32) + samplers, all threaded explicitly ==========
@@ -133,8 +151,27 @@
       return { ms: total, tempo, components: { verifyMs, decideMs, hickMs, motorMs, microbreakMs } };
     }
 
+    // Inter-job gap for the auto-run: a content-scaled browse dwell (reuses Techniques 1+2
+    // via advanceDelayMs, so tempo stays autocorrelated across the run) PLUS an occasional
+    // heavy-tailed long idle. Returns the total gap and its parts (for logging/UI).
+    function batchGapMs({ wordCount = 0 } = {}) {
+      const B = CONFIG.BATCH;
+      const base = advanceDelayMs({ wordCount, optionCount: 2, consequence: 'navigate' }).ms * B.GAP_MULTIPLIER;
+      let idle = 0;
+      if (rng() < B.LONGIDLE_PROB) idle = Math.min(B.LONGIDLE_CAP_MS, lognormal(rng, B.LONGIDLE_MEDIAN_MS, B.LONGIDLE_SIGMA));
+      const ms = clamp(base + idle, B.MIN_GAP_MS, B.MAX_GAP_MS + B.LONGIDLE_CAP_MS);
+      return { ms, base, idle };
+    }
+
+    // Vary the input modality between advances (mix clicks + keyboard-style events).
+    function nextModality() {
+      return rng() < CONFIG.BATCH.MODALITY_KEYBOARD_PROB ? 'keyboard' : 'click';
+    }
+
     return {
       advanceDelayMs,
+      batchGapMs,
+      nextModality,
       seed: s,
       actor: { T, rRead, D },
     };

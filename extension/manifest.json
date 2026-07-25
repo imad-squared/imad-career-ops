@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "LinkedIn Jobs: Copy + Next",
-  "version": "1.2.0",
-  "description": "One keypress (Alt+C) or an on-page button copies the current LinkedIn job to your clipboard, saves it as a structured Markdown file in Downloads/jobs-md, then advances to the next job in the list.",
+  "version": "1.3.0",
+  "description": "Copy the current LinkedIn job to your clipboard and save it as structured Markdown in Downloads/jobs-md (Alt+C), or auto-save every job on the current page at a human pace (Alt+A). Then advance to the next job.",
   "permissions": ["clipboardWrite", "downloads"],
   "background": { "service_worker": "background.js" },
   "content_scripts": [

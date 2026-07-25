@@ -13,10 +13,20 @@ via **Playwright**. It makes one simulated actor operate a system at a realistic
 human pace, specifically modeling a person who uses **English as a second language
 (ESL)**, with a strict **one-input-event → one-semantic-action** invariant.
 
-This is a **personal, attended, non-looping** tool. Every design choice must keep
-it in the low-risk / human-paced regime. It must never behave like an unattended,
+This is a **personal, attended** tool. Every design choice must keep it in the
+low-risk / human-paced regime. It must never behave like an unattended,
 machine-speed scraper. When a choice trades realism/safety against speed, choose
 realism/safety.
+
+> **Amendment (v1.3, opt-in auto-run).** The tool now ships ONE deliberate,
+> user-invoked exception to "non-looping": an **auto-run** that walks the *current
+> page* of jobs, saving each as `.md` (see "Auto-run" below). It is not a scraper:
+> it is opt-in, **bounded** (hard job + time caps, current page only, no
+> pagination), **attended** (visible Stop via button/Esc/Alt+A, pauses when the tab
+> is hidden, halts on a checkpoint page), and paced by the *same* human-timing
+> engine plus a browsing-idle overlay. Everything else in this doc still holds; the
+> auto-run is the only place a single input fans out, and it does so knowingly and
+> reversibly. Keep all other paths one-input → one-action.
 
 **Async vs sync:** default is **async Playwright** (`asyncio.sleep`, async `Page`),
 which fits a delay-driven event loop cleanly. If this repo is built on sync
@@ -161,11 +171,37 @@ jitter alone looks wrong — real people have runs.
 
 ---
 
+## Auto-run (opt-in batch mode, v1.3)
+
+A user-invoked mode (`Alt+A` / the amber ▶ button) that walks the **current page** of
+job cards, running the Copy + Next action on each and saving the `.md`. It is the
+SessionEnvelope layer made real, and it is the *only* sanctioned loop.
+
+- **Pacing:** each inter-job gap comes from the engine (`humanizer.batchGapMs`) — the
+  same autocorrelated tempo + content-scaled think-time as a manual advance, times a
+  browse multiplier, PLUS a low-rate heavy-tailed **long idle** (Poisson-ish, multi-
+  second to multi-minute). Median gap ~8–15 s; occasional minute-plus pauses. Modality
+  alternates between click and keyboard-style events.
+- **Bounded:** hard caps `MAX_JOBS` (40) and `MAX_SESSION_MS` (15 min); **current page
+  only — never clicks "next page."**
+- **Attended:** visible Stop (button / `Esc` / `Alt+A`); **pauses while the tab is
+  hidden** (`document.hidden`), so it never runs in a background tab.
+- **Fails safe:** halts on a checkpoint/verification page; on a missing description it
+  waits a variable re-read latency and gives up after 3 in a row — never a tight retry.
+- **Priors** live in `CONFIG.BATCH` in `extension/humanize.js`; the driver
+  (`runAutoLoop` in `content.js`) only sequences and executes, never invents delays.
+- **Serial:** `await`s each job's full copy → gap → advance before the next; the
+  one-input→one-action budget still governs every internal step.
+
 ## Hard invariants (enforce in code; assert in tests)
 
 1. One input event → exactly one semantic action. Action *n+1* never starts before
    *n*'s full timing budget elapses. No batching, concurrency, pipelining, or one
-   input fanning out into many calls.
+   input fanning out into many calls. **Sole exception:** the opt-in **auto-run**
+   (v1.3) may fan one input out into a *bounded, attended, human-paced* sequence over
+   the current page — but each internal step still runs strictly serially (action
+   *n+1* waits out *n*'s full budget), and it honors caps, a visible Stop, tab-hidden
+   pause, and checkpoint halt. No other path may loop.
 2. ESL multipliers stay **on the reading and text-entry stages only**. They must
    NOT bleed into pointing/motor timing — L2 status barely affects motor.
 3. The simulator must **never** produce any of these bot tells:
@@ -173,7 +209,8 @@ jitter alone looks wrong — real people have runs.
    - sustained sub-human reaction floors (repeated <80–100 ms decisions)
    - reading time uncorrelated with on-screen text volume
    - zero errors / zero corrections, ever
-   - instant retries after failure; unbounded continuous runtime; no long idle
+   - instant retries after failure; **unbounded** continuous runtime; no long idle
+     (the auto-run is *bounded* by hard job + time caps, so this still holds)
    - identical mouse paths or exact-center clicks; identical typing rhythm across
      fields
 

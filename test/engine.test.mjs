@@ -68,5 +68,20 @@ let identical = true;
 for (let i = 0; i < 500; i++) if (a.advanceDelayMs({ wordCount: 250 }).ms !== b.advanceDelayMs({ wordCount: 250 }).ms) { identical = false; break; }
 check('deterministic under a fixed seed', identical);
 
+// --- Batch (auto-run) inter-job gaps: human-paced, bounded, occasionally long-idle ---
+const hb = H.createHumanizer(777);
+const gaps = [], idles = [];
+for (let i = 0; i < 3000; i++) { const g = hb.batchGapMs({ wordCount: 300 }); gaps.push(g.ms); if (g.idle > 0) idles.push(g.idle); }
+const gapMedian = [...gaps].sort((a, b) => a - b)[Math.floor(gaps.length / 2)];
+check('batch gap never below the configured floor', Math.min(...gaps) >= H.CONFIG.BATCH.MIN_GAP_MS - 1, `min=${Math.round(Math.min(...gaps))}ms`);
+check('batch gap median is a slow human browse pace (7–40 s)', gapMedian >= 7000 && gapMedian <= 40000, `median=${Math.round(gapMedian)}ms`);
+check('batch produces occasional heavy-tailed long idles', idles.length > 300 && Math.max(...idles) > 30000, `n_idle=${idles.length} maxIdle=${Math.round(Math.max(...idles) / 1000)}s`);
+const g1 = H.createHumanizer(5).batchGapMs({ wordCount: 250 }).ms, g2 = H.createHumanizer(5).batchGapMs({ wordCount: 250 }).ms;
+check('batch gap deterministic under a fixed seed', g1 === g2);
+const modA = H.createHumanizer(9), modB = H.createHumanizer(9);
+let modSame = true, sawKb = false, sawClick = false;
+for (let i = 0; i < 200; i++) { const m = modA.nextModality(); if (m !== modB.nextModality()) modSame = false; if (m === 'keyboard') sawKb = true; if (m === 'click') sawClick = true; }
+check('modality mixes both keyboard and click, deterministically', modSame && sawKb && sawClick);
+
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILED'}  (seed sample actor: ${JSON.stringify(h.actor, (k, v) => typeof v === 'number' ? +v.toFixed(3) : v)})`);
 process.exit(failures === 0 ? 0 : 1);

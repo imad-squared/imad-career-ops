@@ -32,10 +32,19 @@
 .li-cn-btn--secondary { background: #2f5233; font-size: 13px; padding: 8px 14px; }
 .li-cn-btn--secondary:hover:not(:disabled) { background: #24401f; }
 
+/* Auto-run: amber to signal it's the "caution, this loops" control; pulsing red while active. */
+.li-cn-btn--auto { background: #8a5a00; font-size: 13px; padding: 8px 14px; }
+.li-cn-btn--auto:hover:not(:disabled) { background: #6d4700; }
+.li-cn-btn--auto.li-cn-btn--running { background: #b24020; animation: li-cn-pulse 1.2s ease-in-out infinite; }
+@keyframes li-cn-pulse {
+  0%, 100% { box-shadow: 0 2px 10px rgba(178, 64, 32, 0.5); }
+  50% { box-shadow: 0 2px 18px rgba(178, 64, 32, 0.95); }
+}
+
 #li-cn-toast {
   position: fixed;
   right: 20px;
-  bottom: 96px;
+  bottom: 168px;
   z-index: 2147483647;
   max-width: 340px;
   padding: 10px 14px;
