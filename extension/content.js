@@ -412,6 +412,24 @@
     while (auto.running && document.hidden) await sleep(1000);
   }
 
+  // Don't trust a fixed wait after advancing: LinkedIn can keep the PREVIOUS description
+  // in #job-details while the URL already flipped to the next job, which would save the old
+  // content under the new job's filename. Wait until the URL id matches the job we advanced
+  // to AND its description is populated. Interruptible; doesn't count time while tab hidden.
+  async function waitForJobReady(expectedId, timeoutMs = 12000) {
+    let waited = 0;
+    while (auto.running && waited < timeoutMs) {
+      if (document.hidden) { await sleep(500); continue; }
+      const idOk = !expectedId || getCurrentJobId() === String(expectedId);
+      const el = firstEl(DESC_SELECTORS);
+      const len = el ? (el.innerText || '').trim().length : 0;
+      if (idOk && len >= 120) return true;
+      await sleep(300);
+      waited += 300;
+    }
+    return false;
+  }
+
   // Sleep that aborts promptly on Stop and does NOT tick down while the tab is hidden
   // (so long idles don't elapse in a background tab).
   async function interruptibleSleep(ms) {
@@ -459,6 +477,7 @@
   async function runAutoLoop() {
     const B = (globalThis.__liHumanize && globalThis.__liHumanize.CONFIG.BATCH) || { MAX_JOBS: 40, MAX_SESSION_MS: 900000 };
     const started = Date.now();
+    let expectedId = getCurrentJobId(); // the job currently open (already loaded)
     await interruptibleSleep(1500 + Math.random() * 2500); // orientation pause on landing
     try {
       while (auto.running) {
@@ -467,10 +486,19 @@
         if (isBlockedPage()) { toast('⏹ Auto-run: stopped at a verification/checkpoint page', true); break; }
         await waitWhileHidden(); if (!auto.running) break;
 
+        // Gate on readiness so we never read a stale (previous) description after an advance.
+        const ready = await waitForJobReady(expectedId);
+        if (!auto.running) break;
+        if (!ready) {
+          if (++auto.misses >= 3) { toast('⏹ Auto-run: job never finished loading (3×) — stopping', true); break; }
+          await interruptibleSleep(2000 + Math.random() * 4000); // wait, don't tight-retry
+          continue;
+        }
+
         const r = await copyAndSaveCurrent();
         if (!r) {
           if (++auto.misses >= 3) { toast('⏹ Auto-run: no job description (3×) — stopping', true); break; }
-          await interruptibleSleep(3000 + Math.random() * 5000); // re-read latency, not a tight retry
+          await interruptibleSleep(3000 + Math.random() * 5000);
           continue;
         }
         auto.misses = 0; auto.count++; if (r.copied) auto.saved++;
@@ -487,7 +515,7 @@
             : `⏹ Auto-run: can't advance (${res.reason}) — ${auto.saved} saved`);
           break;
         }
-        await interruptibleSleep(900 + Math.random() * 1400); // let the next job render
+        expectedId = res.id; // next loop waits until THIS job is the one actually loaded
       }
     } catch (e) {
       toast('⏹ Auto-run error: ' + (e && e.message ? e.message : e), true);
