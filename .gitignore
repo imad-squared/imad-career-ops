@@ -1,0 +1,14 @@
+# Dependencies (reproducible via `npm install`)
+node_modules/
+
+# Generated test output (regenerated each run; contains live job data)
+test/results.json
+
+# Playwright browser profiles / logs
+pw-profile/
+*.log
+
+# OS cruft
+.DS_Store
+Thumbs.db
+desktop.ini

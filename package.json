@@ -1,0 +1,14 @@
+{
+  "name": "linkedin-jobs-copy-next",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Chrome/Edge extension (+ Playwright harness) to copy the current LinkedIn job description and advance to the next job in one keypress.",
+  "scripts": {
+    "test": "node test/engine.test.mjs",
+    "test:e2e": "node test/run.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.61.1"
+  }
+}
