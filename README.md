@@ -9,6 +9,10 @@ A small Chrome/Edge extension for the LinkedIn **Jobs** page.
 - **`Alt + G`** (or the green **🔎 GTM · Remote · 24h** button): opens a LinkedIn Jobs
   search pre-filtered to your saved query (default: **GTM**, **Remote**, **past 24 hours**,
   newest first).
+- **`Alt + A`** (or the amber **▶ Auto page** button): **auto-saves every job on the current
+  page** as `.md`, one after another at a human pace — a hands-off batch of Copy + Next.
+  Stop anytime with the button, **`Esc`**, or `Alt + A`. Opt-in and bounded (current page
+  only); see the risk note below.
 
 Then paste (`Ctrl + V`) wherever you keep notes / your ATS / a sheet.
 
@@ -43,15 +47,40 @@ Every copy also writes a clean, structured card to **`Downloads/jobs-md/<slug>-<
 
 ## What it does / doesn't do
 
-- ✅ Every action is triggered by **one of your inputs → one action**. No loops, no
-  background activity, no bulk scraping, no network calls, no access to your account data.
-- ✅ Reads only what's already rendered on screen.
-- ✅ Advances at a **human, variable pace** (see below), never machine-speed.
-- ❌ Never runs unattended or on a timer.
+- ✅ **Default (Copy + Next):** every action is triggered by **one of your inputs → one
+  action** — no loops, no background activity, no network calls, no access to your account data.
+- ✅ **Opt-in auto-run (`Alt + A`):** a *bounded, attended* batch that walks only the **current
+  page** of jobs. It's deliberately human-paced (variable multi-second gaps, occasional
+  multi-minute idles), stops on `Esc`/button, **pauses when the tab is hidden**, halts on a
+  verification/checkpoint page, and enforces hard **job (40) and time (15 min) caps**. It never
+  paginates and never runs on a timer. This is the one place the tool loops — use it knowingly.
+- ✅ Reads only what's already rendered on screen; advances at a **human, variable pace**,
+  never machine-speed.
 
-Browser extensions that alter LinkedIn are discouraged by LinkedIn's Terms of Service; the
-practical risk for personal, human-paced use is low, but it's your call. (If you're a
-LinkedIn *employee*, check internal policy first.)
+> ⚠️ **Risk note.** Any automated loop through your job list — *even human-paced* — is the
+> category of activity LinkedIn detects and can **restrict or ban accounts** for. The pattern
+> (continuous programmatic advancing with no human at the wheel) is the tell, not the speed;
+> and a content script cannot forge genuinely trusted input events. The default
+> one-keypress-per-job mode is materially lower-risk. Auto-run trades that for convenience —
+> it's your call and your account. Browser extensions that alter LinkedIn are also discouraged
+> by LinkedIn's ToS; if you're a LinkedIn *employee*, check internal policy first.
+
+## Auto-run (opt-in batch)
+
+Press **`Alt + A`** (or click **▶ Auto page**) once and it saves every job on the current page,
+advancing itself with the same human-timing engine as Copy + Next — plus a browsing overlay:
+generous inter-job dwell scaled to each description, occasional heavy-tailed idles, and a mix
+of click/keyboard-style advances. Median gap is ~8–15 s with an occasional minute-plus pause.
+
+Controls & guarantees:
+
+- **Stop instantly:** the ⏹ **Stop** button, **`Esc`** (works even while typing), or `Alt + A`.
+- **Attended:** if you switch away from the tab it **pauses**, resuming when you return.
+- **Bounded:** stops at the end of the current page (no pagination), or after 40 jobs / 15 min.
+- **Fails safe:** halts on a captcha/checkpoint page and after 3 consecutive missing descriptions
+  (variable re-read latency between attempts — never a tight retry loop).
+
+Tune the pacing/caps in the `CONFIG.BATCH` block at the top of `extension/humanize.js`.
 
 ## Human-paced advancing
 
