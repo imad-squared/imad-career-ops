@@ -3,13 +3,43 @@
 A small Chrome/Edge extension for the LinkedIn **Jobs** page.
 
 - **`Alt + C`** (or the blue **📋 Copy + Next** button): copies the current job — title,
-  company, location, direct link, and full description — to your clipboard, then, after a
-  short **human-paced** delay, advances to the next job in the list.
+  company, location, direct link, and full description — to your clipboard **and saves it as a
+  structured Markdown file** in `Downloads/jobs-md/`, then, after a short **human-paced** delay,
+  advances to the next job in the list.
 - **`Alt + G`** (or the green **🔎 GTM · Remote · 24h** button): opens a LinkedIn Jobs
   search pre-filtered to your saved query (default: **GTM**, **Remote**, **past 24 hours**,
   newest first).
 
 Then paste (`Ctrl + V`) wherever you keep notes / your ATS / a sheet.
+
+## Saved Markdown files
+
+Every copy also writes a clean, structured card to **`Downloads/jobs-md/<slug>-<jobId>.md`**:
+
+```
+# [Exact Job Title]
+**Company:** [Company Name]
+**Location:** [City, Country or Remote]
+**URL:** [Link to the posting]
+
+### Role Summary
+…
+### Key Responsibilities
+- …
+### Requirements & Qualifications
+- …
+```
+
+- An extension can only write to your **Downloads** folder — not an arbitrary path — so files
+  land in `Downloads/jobs-md/`. Re-copying a job **overwrites** its file (named by job id), so
+  there are no `job (1).md` duplicates.
+- The three-section split is a **heuristic** parse of the posting's own headings/bullets;
+  boilerplate tails (benefits, EEO, how-to-apply) are trimmed. The full raw text still goes to
+  your clipboard. See `jobs-md/README.md`.
+- If Chrome is set to **"Ask where to save each file before downloading"** (Settings → Downloads),
+  every copy will pop a save dialog. Turn it off for silent, one-keypress saves.
+- The save needs the `downloads` permission, so after updating the extension click the **reload**
+  icon on its card in `chrome://extensions`.
 
 ## What it does / doesn't do
 
@@ -62,11 +92,14 @@ After any edit, click the reload icon on the extension card in `chrome://extensi
 ## Tests
 
 ```
-npm test        # pure timing-engine stats — no browser (CV, autocorrelation, scaling, floor)
-npm run test:e2e   # headed Playwright: loads the extension, you log in, verifies all 3 actions
+npm test        # no browser: timing-engine stats + job->Markdown formatter/section parsing
+npm run test:e2e   # headed Playwright: loads the extension, you log in, verifies all actions
 ```
 
+`npm test` runs two pure suites — the timing engine (CV, autocorrelation, scaling, floor) and
+the Markdown formatter (template exactness, section routing, messy/header-less fallbacks).
+
 `test:e2e` opens a browser on LinkedIn Jobs; log in and it auto-detects the listings, waits
-for the page to be ready, then exercises `Alt+C`, the button, and the GTM search. Results
-(including the measured humanized delays and a live selector probe) land in
-`test/results.json`.
+for the page to be ready, then exercises `Alt+C`, the button, and the GTM search — and
+**verifies a real `jobs-md/*.md` file is written** to a temp download dir. Results (measured
+humanized delays, a live selector probe, and a saved-`.md` sample) land in `test/results.json`.
