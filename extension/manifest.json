@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "LinkedIn Jobs: Copy + Next",
-  "version": "1.0.0",
-  "description": "One keypress (Alt+C) or an on-page button copies the current LinkedIn job's title, company, link and description to your clipboard, then advances to the next job in the list.",
-  "permissions": ["clipboardWrite"],
+  "version": "1.2.0",
+  "description": "One keypress (Alt+C) or an on-page button copies the current LinkedIn job to your clipboard, saves it as a structured Markdown file in Downloads/jobs-md, then advances to the next job in the list.",
+  "permissions": ["clipboardWrite", "downloads"],
+  "background": { "service_worker": "background.js" },
   "content_scripts": [
     {
       "matches": ["https://www.linkedin.com/jobs/*"],
-      "js": ["humanize.js", "content.js"],
+      "js": ["humanize.js", "jobmd.js", "content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
     }

@@ -21,6 +21,10 @@ const userDataDir =
   process.env.PW_PROFILE ||
   path.join(os.tmpdir(), 'linkedin-jobs-copy-next', 'pw-profile');
 const resultsPath = path.join(__dirname, 'results.json');
+// Where the extension's downloads land during this test. We point Chrome here via CDP
+// (browser-wide, so it catches the service worker's chrome.downloads call) and then
+// assert a jobs-md/*.md file actually appears — the wiring a Node unit test can't cover.
+const mdDir = path.join(os.tmpdir(), 'linkedin-jobs-copy-next', 'e2e-downloads');
 
 const JOBS_URL = 'https://www.linkedin.com/jobs/collections/recommended/';
 const LOGIN_TIMEOUT_MS = 20 * 60 * 1000; // 20 minutes to log in
@@ -57,6 +61,32 @@ const save = () => {
   catch (e) { console.log('save err', String(e)); }
 };
 
+// List saved .md files. Check both <mdDir>/jobs-md (real Chrome honors the subfolder) and
+// <mdDir> root (CDP's setDownloadBehavior flattens the name to download.md in this harness).
+function listSavedMd() {
+  const out = [];
+  for (const dir of [path.join(mdDir, 'jobs-md'), mdDir]) {
+    try {
+      for (const f of fs.readdirSync(dir)) {
+        if (!f.endsWith('.md')) continue;
+        const p = path.join(dir, f);
+        try { if (fs.statSync(p).isFile()) out.push({ file: f, p, mtime: fs.statSync(p).mtimeMs }); } catch (_) {}
+      }
+    } catch (_) {}
+  }
+  return out;
+}
+// Wait for a .md that appeared at/after `sinceMs` (i.e. saved by the trigger we just fired).
+async function waitForSavedMd(page, sinceMs, timeoutMs = 9000) {
+  const t = Date.now();
+  while (Date.now() - t < timeoutMs) {
+    const hit = listSavedMd().filter((x) => x.mtime >= sinceMs - 1500).sort((a, b) => b.mtime - a.mtime)[0];
+    if (hit) { try { return { file: hit.file, content: fs.readFileSync(hit.p, 'utf8') }; } catch (_) {} }
+    await page.waitForTimeout(400);
+  }
+  return null;
+}
+
 // SPA re-renders (the advance click) can destroy the execution context mid-evaluate.
 // Retry transient failures so the harness rides through LinkedIn's navigations.
 async function evalSafe(page, fn, arg, tries = 5) {
@@ -84,33 +114,42 @@ async function waitForDescription(page, minLen = 200, timeoutMs = 12000) {
 
 async function runTrigger(page, label, fire) {
   await page.bringToFront();
-  await page.evaluate(() => { const a = document.activeElement; if (a && a.blur) a.blur(); });
+  await evalSafe(page, () => { const a = document.activeElement; if (a && a.blur) a.blur(); });
   const descLen = await waitForDescription(page); // let the job description finish rendering
   log(`${label}: description length before trigger = ${descLen}`);
-  const before = await page.evaluate(() => new URLSearchParams(location.search).get('currentJobId'));
-  const expFrag = await page.evaluate((sels) => {
+  const before = await evalSafe(page, () => new URLSearchParams(location.search).get('currentJobId'));
+  const expFrag = await evalSafe(page, (sels) => {
     for (const s of sels) {
       const el = document.querySelector(s);
       if (el) { const tx = (el.innerText || '').replace(/\s+/g, ' ').trim(); if (tx) return tx.slice(0, 80); }
     }
     return '';
   }, SEL.DESC);
-  await page.evaluate((l) => { try { navigator.clipboard.writeText('__RESET_' + l + '__'); } catch (e) {} }, label);
+  await evalSafe(page, (l) => { try { navigator.clipboard.writeText('__RESET_' + l + '__'); } catch (e) {} }, label);
 
   const t0 = Date.now();
   await fire();
-  // Copy is immediate; the advance is intentionally delayed (human pacing).
+  // Copy is immediate; the advance is intentionally delayed (human pacing). evalSafe rides
+  // through the SPA re-render the advance triggers instead of crashing the whole run.
   await page.waitForTimeout(800);
-  const clip = await page.evaluate(() => navigator.clipboard.readText().then((t) => t).catch((e) => 'ERR:' + e));
+  const clip = await evalSafe(page, () => navigator.clipboard.readText().then((t) => t).catch((e) => 'ERR:' + e));
 
   // Wait out the humanized delay: poll up to 22s for the job id to change.
   let after = before;
   while (Date.now() - t0 < 22000) {
-    after = await page.evaluate(() => new URLSearchParams(location.search).get('currentJobId'));
+    after = await evalSafe(page, () => new URLSearchParams(location.search).get('currentJobId'));
     if (after && after !== before) break;
     await page.waitForTimeout(400);
   }
   const advanceMs = Date.now() - t0;
+
+  // Verify the structured .md actually hit disk via the service worker.
+  const md = await waitForSavedMd(page, t0);
+  const mdValid = md
+    ? /^# /.test(md.content) && md.content.includes('**Company:**') &&
+      md.content.includes('### Role Summary') && md.content.includes('### Key Responsibilities') &&
+      md.content.includes('### Requirements & Qualifications')
+    : false;
 
   const normClip = (typeof clip === 'string' ? clip : '').replace(/\s+/g, ' ').trim();
   const frag = expFrag.slice(0, 40);
@@ -120,9 +159,10 @@ async function runTrigger(page, label, fire) {
     step: label, before, after, advanced, copied, advanceMs,
     clipLen: typeof clip === 'string' ? clip.length : 0,
     expFrag, clipSample: normClip.slice(0, 180),
+    mdSaved: !!md, mdValid, mdFile: md ? md.file : null, mdSample: md ? md.content.slice(0, 320) : '',
   };
   results.steps.push(r); save();
-  log(`${label} =>`, JSON.stringify({ copied, advanced, advanceMs, before, after, clipLen: r.clipLen }));
+  log(`${label} =>`, JSON.stringify({ copied, advanced, advanceMs, mdSaved: r.mdSaved, mdValid, mdFile: r.mdFile, clipLen: r.clipLen }));
   await page.waitForTimeout(900); // let the busy lock release before the next trigger
   return r;
 }
@@ -141,7 +181,29 @@ try {
   } catch (e) { log('grant permissions err (non-fatal):', String(e)); }
 
   const page = context.pages()[0] || (await context.newPage());
+
+  // Route ALL downloads (including the extension service worker's) to a known, clean dir
+  // so we can verify the .md save. Browser-domain command => browser-wide.
+  try { fs.rmSync(mdDir, { recursive: true, force: true }); } catch (_) {}
+  try { fs.mkdirSync(mdDir, { recursive: true }); } catch (_) {}
+  try {
+    const cdp = await context.newCDPSession(page);
+    try {
+      await cdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: mdDir, eventsEnabled: true });
+    } catch (_) {
+      await cdp.send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: mdDir });
+    }
+    log('downloads routed to', mdDir);
+  } catch (e) { log('setDownloadBehavior err (non-fatal):', String(e)); }
+
+  // Surface what the extension is doing: content-script logs, page errors, and the
+  // service worker (background.js) that performs the actual chrome.downloads save.
+  page.on('console', (m) => { const t = m.text(); if (/copy\+next|li-cn|jobs-md|download|save/i.test(t)) log('PAGE:', m.type(), t); });
+  page.on('pageerror', (e) => log('PAGE error:', String(e)));
+  context.on('serviceworker', (w) => log('SW registered:', w.url()));
+
   await page.goto(JOBS_URL, { waitUntil: 'domcontentloaded' }).catch((e) => log('goto err:', String(e)));
+  for (const w of context.serviceWorkers()) log('SW present:', w.url());
 
   let windowClosed = false;
   context.on('close', () => { windowClosed = true; });
@@ -260,10 +322,16 @@ try {
     humanPacing: kb.advanceMs > 600 || bt.advanceMs > 600,
     searchNavigates: searchOk,
     searchPakistanCards: pakistanCount,
+    markdownSaved: kb.mdSaved || bt.mdSaved,
+    markdownValid: kb.mdValid || bt.mdValid,
+    markdownFiles: listSavedMd().map((x) => x.file),
   };
   results.finishedAt = new Date().toISOString();
   save();
   log('VERDICT:', JSON.stringify(results.verdict, null, 2));
+  const sample = [kb, bt].find((x) => x && x.mdSample);
+  if (sample) log(`\n----- SAVED .md (${sample.mdFile}) -----\n${sample.mdSample}\n-----------------------------`);
+  log('saved .md dir:', path.join(mdDir, 'jobs-md'));
 } catch (e) {
   results.error = String((e && e.stack) || e);
   save();

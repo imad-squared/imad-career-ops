@@ -216,16 +216,63 @@
     return { ok: false, reason: 'end-of-list' };
   }
 
-  function buildClipboardText() {
-    const desc = getDescription();
-    if (!desc) return null;
-    const title = cleanInline(textFrom(TITLE_SELECTORS));
-    const company = cleanInline(textFrom(COMPANY_SELECTORS));
-    const location = cleanInline(textFrom(LOCATION_SELECTORS));
-    const url = jobUrl();
-    const headerLine = title && company ? `${title} — ${company}` : title || company || '';
-    const header = [headerLine, location, url].filter(Boolean).join('\n');
-    return { text: (header ? header + '\n\n' : '') + desc, wordCount: countWords(desc) };
+  // Collect everything about the current job ONCE (incl. the live description element,
+  // which the Markdown formatter parses into sections). Returns null if no description.
+  function collectJob() {
+    tryExpandDescription();
+    const el = firstEl(DESC_SELECTORS);
+    const description = el ? cleanBlock(el.innerText) : '';
+    if (!description) return null;
+    // The primary-description container is "Location · N ago · N applicants" — keep only
+    // the first segment so the .md Location isn't polluted with posting metadata.
+    const rawLocation = cleanInline(textFrom(LOCATION_SELECTORS));
+    return {
+      el,
+      title: cleanInline(textFrom(TITLE_SELECTORS)),
+      company: cleanInline(textFrom(COMPANY_SELECTORS)),
+      location: rawLocation.split('·')[0].trim(),
+      url: jobUrl(),
+      description,
+      wordCount: countWords(description),
+      jobId: getCurrentJobId(),
+    };
+  }
+
+  function buildClipboardText(job) {
+    const j = job || collectJob();
+    if (!j) return null;
+    const headerLine = j.title && j.company ? `${j.title} — ${j.company}` : j.title || j.company || '';
+    const header = [headerLine, j.location, j.url].filter(Boolean).join('\n');
+    return { text: (header ? header + '\n\n' : '') + j.description, wordCount: j.wordCount };
+  }
+
+  // Save the current job as a structured Markdown file. Content scripts can't call
+  // chrome.downloads, so we hand the formatted text to the service worker (background.js),
+  // which writes it to Downloads/jobs-md/. Non-blocking; failure only toasts, never stops
+  // the copy/advance (one input -> one action still holds).
+  function saveJobAsMarkdown(job) {
+    const fmt = globalThis.__liJobMd;
+    if (!fmt || !job) return;
+    if (!(typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage)) return;
+    let markdown, filename;
+    try {
+      markdown = fmt.formatJobMarkdown({
+        title: job.title, company: job.company, location: job.location, url: job.url,
+        description: job.description, // parsed from innerText (LinkedIn DOM is non-semantic)
+      });
+      filename = fmt.buildFilename(job.title, job.jobId, job.company);
+    } catch (e) {
+      toast('⚠️ .md format failed: ' + (e && e.message ? e.message : e), true);
+      return;
+    }
+    try {
+      chrome.runtime.sendMessage({ type: 'li-cn-save-job', filename, markdown }, (resp) => {
+        if (chrome.runtime.lastError) { console.warn('[Copy+Next] save msg error:', chrome.runtime.lastError.message); return; }
+        if (resp && resp.ok) console.info('[Copy+Next] saved', resp.path);
+        else if (resp) { console.warn('[Copy+Next] save failed:', resp.error); toast('⚠️ .md save failed: ' + resp.error, true); }
+        else console.warn('[Copy+Next] save: no response from service worker');
+      });
+    } catch (_) { /* messaging unavailable — skip silently */ }
   }
 
   async function copyToClipboard(text) {
@@ -277,10 +324,12 @@
     busy = true;
     setCopyBtnBusy(true);
     try {
-      const built = buildClipboardText();
-      if (!built) { toast('⚠️ No job description found on the page', true); return; }
+      const job = collectJob();
+      if (!job) { toast('⚠️ No job description found on the page', true); return; }
+      const built = buildClipboardText(job);
 
       const copied = await copyToClipboard(built.text); // clipboard is ready immediately
+      saveJobAsMarkdown(job); // structured .md -> Downloads/jobs-md (non-blocking)
 
       // Technique 1 + 2 live here: the engine returns a human-paced, content-scaled,
       // autocorrelated delay to wait before advancing.
@@ -384,10 +433,13 @@
     handleSearch,
     buildSearchUrl,
     buildClipboardText,
+    collectJob,
+    saveJobAsMarkdown,
+    jobMd: () => { const j = collectJob(); return j && globalThis.__liJobMd ? globalThis.__liJobMd.formatJobMarkdown(j) : null; },
     getDescription,
     getCards: () => getCards().map((c) => ({ id: c.id })),
     getCurrentJobId,
     actor: humanizer.actor,
-    version: '1.1.0',
+    version: '1.2.0',
   };
 })();

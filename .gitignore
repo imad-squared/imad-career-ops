@@ -8,6 +8,10 @@ test/results.json
 pw-profile/
 *.log
 
+# Saved job cards are personal — keep them out of git, but track the folder's README.
+jobs-md/*.md
+!jobs-md/README.md
+
 # OS cruft
 .DS_Store
 Thumbs.db
