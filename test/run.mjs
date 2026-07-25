@@ -9,14 +9,17 @@
 import { chromium } from 'playwright';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 const extPath = path.join(projectRoot, 'extension');
+// Persistent browser profile so you only log in once. Override with PW_PROFILE.
+// Defaults to a portable OS-temp location (no hardcoded per-user path).
 const userDataDir =
   process.env.PW_PROFILE ||
-  'C:\\Users\\pn\\AppData\\Local\\Temp\\claude\\C--Users-pn-linkedin-jobs\\35f143f6-c2d9-45c9-94d8-bdad1fd1adef\\scratchpad\\pw-profile';
+  path.join(os.tmpdir(), 'linkedin-jobs-copy-next', 'pw-profile');
 const resultsPath = path.join(__dirname, 'results.json');
 
 const JOBS_URL = 'https://www.linkedin.com/jobs/collections/recommended/';
