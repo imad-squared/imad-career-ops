@@ -6,8 +6,11 @@
  *   • Alt+C  or  📋 Copy + Next   — copy the current job (title, company, location,
  *                                   link, description) to the clipboard, then, after a
  *                                   human-paced delay, advance to the next job.
- *   • Alt+G  or  🔎 GTM · Remote · 24h — jump to a LinkedIn Jobs search pre-filtered to
- *                                   your saved query (default: GTM, Remote, past 24h).
+ *   • Alt+G        or  🔎 HSE · KSA · 24h   — jump to a LinkedIn Jobs search pre-filtered
+ *                                   to your saved query, posted in the past 24 hours.
+ *   • Alt+Shift+G  or  🔎 HSE · KSA · Week  — the same query over the past week.
+ *                                   (Default query: HSE / Health & Safety Manager roles
+ *                                   in Saudi Arabia, newest first.)
  *
  * Human pacing (the delay before advancing) comes from humanize.js — a pure timing
  * engine that ports the two most load-bearing techniques from CLAUDE.md: autocorrelated
@@ -19,22 +22,40 @@
   if (window.__liCopyNextLoaded) return;
   window.__liCopyNextLoaded = true;
 
-  // ===== Saved search (edit these to change what Alt+G opens) ===========
+  // ===== Saved search (edit these to change what Alt+G / Alt+Shift+G open) =====
   const SEARCH = {
-    keywords: 'GTM',
-    workplaceType: 'remote', // 'remote' | 'onsite' | 'hybrid' | 'any'
-    postedWithin: '24h', // '24h' | 'week' | 'month' | 'any'
-    // LinkedIn defaults the location to your profile region (Pakistan) unless told
-    // otherwise. Set location + geoId to override it. '' leaves LinkedIn's default.
-    location: 'Worldwide',
-    geoId: '92000000', // LinkedIn geoId: 92000000 = Worldwide
-    sortByDate: true, // most recent first (good for a 24h window)
+    // Boolean OR, because LinkedIn indexes the posted TITLE verbatim: the same role is
+    // advertised as "HSE Manager", "Health & Safety Manager", "HSE Lead", etc. A single
+    // bare phrase makes the 24h window empty most days. Quotes keep each phrase intact
+    // (an unquoted "HSE Manager" also matches any "manager" posting mentioning HSE).
+    keywords:
+      '("HSE Manager" OR "HSE Lead" OR "Health and Safety Manager" OR "Health & Safety Manager" OR "Safety Manager" OR "HSE Supervisor")',
+    // 'any' deliberately: HSE is an on-site discipline (plants, sites, refineries), so
+    // filtering to remote returns ~nothing in a single country. 'any' omits f_WT entirely.
+    workplaceType: 'any', // 'remote' | 'onsite' | 'hybrid' | 'any'
+    // LinkedIn defaults the location to your own profile region (Pakistan) unless told
+    // otherwise, so BOTH of these are required — geoId is what actually filters, the
+    // location text is what the UI displays. '' leaves LinkedIn's default.
+    location: 'Saudi Arabia',
+    // Resolved live from LinkedIn's own location typeahead (not guessed) — see README.
+    geoId: '100459316', // LinkedIn geoId: 100459316 = Saudi Arabia
+    sortByDate: true, // most recent first (matters for a 24h/1-week window)
+    label: 'HSE · KSA', // short button/toast label (keywords are too long to display)
+  };
+
+  // The two recency windows the search buttons offer. LinkedIn's f_TPR is a
+  // "posted within the last N seconds" filter, so r86400 = 24h, r604800 = 7 days.
+  const RECENCY = {
+    day: { key: '24h', tpr: 'r86400', label: '24h' },
+    week: { key: 'week', tpr: 'r604800', label: 'Week' },
   };
 
   // ===== Keyboard shortcuts (matched on e.code, layout-independent) ======
   const SHORTCUTS = {
     copyNext: { alt: true, ctrl: false, shift: false, meta: false, code: 'KeyC', label: 'Alt + C' },
-    search: { alt: true, ctrl: false, shift: false, meta: false, code: 'KeyG', label: 'Alt + G' },
+    // Two windows on two distinct inputs (one input -> one action; no cycling toggle).
+    searchDay: { alt: true, ctrl: false, shift: false, meta: false, code: 'KeyG', label: 'Alt + G' },
+    searchWeek: { alt: true, ctrl: false, shift: true, meta: false, code: 'KeyG', label: 'Alt + Shift + G' },
     auto: { alt: true, ctrl: false, shift: false, meta: false, code: 'KeyA', label: 'Alt + A' },
   };
   // ======================================================================
@@ -327,22 +348,25 @@
     }
   }
 
-  function buildSearchUrl() {
+  // Build the saved-search URL for one recency window (defaults to 24h).
+  function buildSearchUrl(recency) {
+    const r = recency || RECENCY.day;
     const p = new URLSearchParams();
     p.set('keywords', SEARCH.keywords);
     const wt = { onsite: '1', remote: '2', hybrid: '3' }[SEARCH.workplaceType];
-    if (wt) p.set('f_WT', wt);
-    const tpr = { '24h': 'r86400', week: 'r604800', month: 'r2592000' }[SEARCH.postedWithin];
-    if (tpr) p.set('f_TPR', tpr);
+    if (wt) p.set('f_WT', wt); // 'any' -> omitted, so LinkedIn returns every workplace type
+    if (r.tpr) p.set('f_TPR', r.tpr);
+    // geoId is the filter LinkedIn actually honors; the location text is for display.
     if (SEARCH.location) p.set('location', SEARCH.location);
     if (SEARCH.geoId) p.set('geoId', SEARCH.geoId);
     if (SEARCH.sortByDate) p.set('sortBy', 'DD');
     return 'https://www.linkedin.com/jobs/search/?' + p.toString();
   }
 
-  function handleSearch() {
-    toast(`🔎 Searching: ${SEARCH.keywords} · ${SEARCH.workplaceType} · ${SEARCH.postedWithin}`);
-    location.assign(buildSearchUrl());
+  function handleSearch(recency) {
+    const r = recency || RECENCY.day;
+    toast(`🔎 Searching: ${SEARCH.label} · past ${r.label}`);
+    location.assign(buildSearchUrl(r));
   }
 
   // Copy the CURRENT job to the clipboard + save its .md. Shared by the manual button and
@@ -532,13 +556,19 @@
     const panel = document.createElement('div');
     panel.id = 'li-cn-panel';
 
-    const searchBtn = document.createElement('button');
-    searchBtn.id = 'li-cn-search';
-    searchBtn.type = 'button';
-    searchBtn.className = 'li-cn-btn li-cn-btn--secondary';
-    searchBtn.textContent = `🔎 ${SEARCH.keywords} · ${SEARCH.workplaceType} · ${SEARCH.postedWithin}`;
-    searchBtn.title = `Open a LinkedIn Jobs search for this saved query  (${SHORTCUTS.search.label})`;
-    searchBtn.addEventListener('click', (e) => { e.preventDefault(); handleSearch(); });
+    // One button per recency window — each click is one input -> one navigation.
+    const mkSearchBtn = (id, recency, shortcut) => {
+      const b = document.createElement('button');
+      b.id = id;
+      b.type = 'button';
+      b.className = 'li-cn-btn li-cn-btn--secondary';
+      b.textContent = `🔎 ${SEARCH.label} · ${recency.label}`;
+      b.title = `Open a LinkedIn Jobs search for this saved query, posted in the past ${recency.label}  (${shortcut.label})`;
+      b.addEventListener('click', (e) => { e.preventDefault(); handleSearch(recency); });
+      return b;
+    };
+    const searchBtn = mkSearchBtn('li-cn-search', RECENCY.day, SHORTCUTS.searchDay);
+    const searchWeekBtn = mkSearchBtn('li-cn-search-week', RECENCY.week, SHORTCUTS.searchWeek);
 
     copyBtn = document.createElement('button');
     copyBtn.id = 'li-cn-btn';
@@ -560,6 +590,7 @@
     autoBtn.addEventListener('click', (e) => { e.preventDefault(); toggleAuto(); });
 
     panel.appendChild(searchBtn);
+    panel.appendChild(searchWeekBtn);
     panel.appendChild(copyBtn);
     panel.appendChild(autoBtn);
     document.body.appendChild(panel);
@@ -579,8 +610,10 @@
       autoBtn.title = running ? 'Stop the auto-run (or press Esc / Alt+A)' : autoBtn.dataset.title;
     }
     if (copyBtn) copyBtn.disabled = running;
-    const s = document.getElementById('li-cn-search');
-    if (s) s.disabled = running;
+    for (const id of ['li-cn-search', 'li-cn-search-week']) {
+      const s = document.getElementById(id);
+      if (s) s.disabled = running;
+    }
   }
 
   let toastTimer = null;
@@ -615,7 +648,9 @@
       const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
       if (typing) return; // never hijack a shortcut while you're typing in a field
       if (matches(e, SHORTCUTS.copyNext)) { e.preventDefault(); e.stopPropagation(); handleCopyAndNext(); }
-      else if (matches(e, SHORTCUTS.search)) { e.preventDefault(); e.stopPropagation(); handleSearch(); }
+      // matches() compares every modifier exactly, so Alt+G and Alt+Shift+G never collide.
+      else if (matches(e, SHORTCUTS.searchDay)) { e.preventDefault(); e.stopPropagation(); handleSearch(RECENCY.day); }
+      else if (matches(e, SHORTCUTS.searchWeek)) { e.preventDefault(); e.stopPropagation(); handleSearch(RECENCY.week); }
       else if (matches(e, SHORTCUTS.auto)) { e.preventDefault(); e.stopPropagation(); toggleAuto(); }
     },
     true
@@ -629,6 +664,9 @@
     handleCopyAndNext,
     handleSearch,
     buildSearchUrl,
+    SEARCH,
+    RECENCY,
+    searchUrls: () => ({ day: buildSearchUrl(RECENCY.day), week: buildSearchUrl(RECENCY.week) }),
     buildClipboardText,
     collectJob,
     saveJobAsMarkdown,
@@ -641,6 +679,6 @@
     getCards: () => getCards().map((c) => ({ id: c.id })),
     getCurrentJobId,
     actor: humanizer.actor,
-    version: '1.3.0',
+    version: '1.4.0',
   };
 })();
