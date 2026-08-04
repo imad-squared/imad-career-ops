@@ -334,11 +334,13 @@ try {
           count: els.length,
           empty: !!document.querySelector('.jobs-search-no-results-banner, .jobs-search-results-list__no-results'),
           banner: banner ? (banner.innerText || '').replace(/\s+/g, ' ').trim() : '',
+          // Drop not-yet-rendered (occluded/lazy) cards: they have no text, so counting
+          // them as "off-location" or undated would misreport the result set.
           rows: els.slice(0, 25).map((li) => {
             const text = (li.innerText || '').replace(/\s+/g, ' ').trim();
             const m = text.match(/(\d+)\s*(minute|hour|day|week|month)s?\s*ago/i);
             return { text, ageNum: m ? Number(m[1]) : null, ageUnit: m ? m[2].toLowerCase() : null };
-          }),
+          }).filter((r) => r.text.length > 0),
         };
       });
     } catch (e) { log(`${w.name} cards read err:`, String(e)); }
@@ -355,7 +357,10 @@ try {
     const r = {
       step: `search-${w.name}`,
       urlOk, url,
-      cardCount: cards.count, banner: cards.banner, noResultsBanner: cards.empty,
+      // cardCount = every <li> in the list (matches LinkedIn's own "N results" banner);
+      // renderedCards = the subset with text, which the counts below are computed over.
+      cardCount: cards.count, renderedCards: cards.rows.length,
+      banner: cards.banner, noResultsBanner: cards.empty,
       ksaCount, pakistanCount,
       datedCards: dated.length, maxAgeHours: dated.length ? Math.max(...dated) : null,
       withinWindow: overWindow.length === 0, overWindowHours: overWindow,
