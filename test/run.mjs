@@ -1,9 +1,14 @@
 /*
- * Playwright harness: loads the unpacked extension into a real Chromium window,
- * opens LinkedIn Jobs, waits for YOU to log in, then verifies that both triggers
- * (Alt+C and the floating button) copy the current job and advance to the next.
+ * Playwright harness: loads the unpacked extension into a real MICROSOFT EDGE window
+ * (channel: 'msedge'), opens LinkedIn Jobs, waits for YOU to log in, then verifies that
+ * both triggers (Alt+C and the floating button) copy the current job and advance to the
+ * next — and that BOTH saved-search buttons (past 24h / past week) land on real
+ * Saudi-Arabia HSE results inside their recency window.
  *
- * Run:  npm test
+ * NOTE: this uses its own persistent Playwright profile (see userDataDir), NOT your
+ * everyday Edge profile — so the FIRST run needs a manual login. It persists after that.
+ *
+ * Run:  npm run test:e2e
  * Results are written to test/results.json and printed to the console.
  */
 import { chromium } from 'playwright';
@@ -173,6 +178,7 @@ try {
   log('profile:', userDataDir);
   context = await chromium.launchPersistentContext(userDataDir, {
     headless: false,
+    channel: 'msedge', // drive real Microsoft Edge, not Playwright's bundled Chromium
     viewport: null,
     args: [`--disable-extensions-except=${extPath}`, `--load-extension=${extPath}`, '--start-maximized'],
   });
@@ -282,37 +288,128 @@ try {
     await page.click('#li-cn-btn', { timeout: 5000 }).catch((e) => log('button click err:', String(e)));
   });
 
-  // Test 3: saved-search navigation (GTM · Remote · past 24h).
-  const beforeUrl = page.url();
-  await page.click('#li-cn-search', { timeout: 5000 }).catch((e) => log('search click err:', String(e)));
-  let searchUrl = beforeUrl;
-  const st0 = Date.now();
-  while (Date.now() - st0 < 12000) {
-    searchUrl = page.url();
-    if (/[?&]keywords=GTM/i.test(searchUrl)) break;
-    await page.waitForTimeout(400);
+  // Test 3: both saved-search buttons (HSE · Saudi Arabia · past 24h and past week).
+  // Week runs first and MUST return results; the 24h window is reported but never
+  // failed on an empty day — zero fresh postings in 24h is a fact about the market,
+  // not a bug in the filter.
+  const windows = [
+    { name: 'week', sel: '#li-cn-search-week', tpr: 'r604800', maxAgeH: 24 * 7, requireNonEmpty: true },
+    { name: '24h', sel: '#li-cn-search', tpr: 'r86400', maxAgeH: 24, requireNonEmpty: false },
+  ];
+  const KSA_RE = /saudi arabia|riyadh|jeddah|jiddah|dammam|khobar|dhahran|jubail|yanbu|makkah|mecca|medina|madinah|tabuk|abha|neom|ksa\b/i;
+  const searchResults = {};
+
+  for (const w of windows) {
+    await page.waitForSelector(w.sel, { timeout: 15000 }).catch(() => log(`WARN: ${w.sel} not present`));
+    await page.click(w.sel, { timeout: 5000 }).catch((e) => log(`${w.name} search click err:`, String(e)));
+
+    // Wait for the SPA to land on the built search URL (carrying this window's f_TPR).
+    let url = page.url();
+    const st0 = Date.now();
+    while (Date.now() - st0 < 15000) {
+      url = page.url();
+      if (new RegExp(`f_TPR=${w.tpr}`).test(url)) break;
+      await page.waitForTimeout(400);
+    }
+
+    const urlOk =
+      /[?&]keywords=[^&]*HSE/i.test(url) &&
+      new RegExp(`f_TPR=${w.tpr}`).test(url) &&
+      /geoId=100459316/.test(url) && // Saudi Arabia, resolved from LinkedIn's typeahead
+      /sortBy=DD/.test(url) &&
+      !/f_WT=/.test(url); // workplaceType 'any' must NOT emit a workplace filter
+
+    // Read the result cards: how many, where, and how old.
+    let cards = { count: 0, rows: [], banner: '', empty: false };
+    try {
+      await page.waitForSelector(
+        'li[data-occludable-job-id], .scaffold-layout__list-item, .jobs-search-no-results-banner',
+        { timeout: 20000 }
+      );
+      await page.waitForTimeout(2500); // let the lazy list settle
+      cards = await page.evaluate(() => {
+        const els = [...document.querySelectorAll('li[data-occludable-job-id], .scaffold-layout__list-item')];
+        const banner = document.querySelector('.jobs-search-results-list__subtitle, small.jobs-search-results-list__text');
+        return {
+          count: els.length,
+          empty: !!document.querySelector('.jobs-search-no-results-banner, .jobs-search-results-list__no-results'),
+          banner: banner ? (banner.innerText || '').replace(/\s+/g, ' ').trim() : '',
+          // Drop not-yet-rendered (occluded/lazy) cards: they have no text, so counting
+          // them as "off-location" or undated would misreport the result set.
+          rows: els.slice(0, 25).map((li) => {
+            const text = (li.innerText || '').replace(/\s+/g, ' ').trim();
+            const m = text.match(/(\d+)\s*(minute|hour|day|week|month)s?\s*ago/i);
+            return { text, ageNum: m ? Number(m[1]) : null, ageUnit: m ? m[2].toLowerCase() : null };
+          }).filter((r) => r.text.length > 0),
+        };
+      });
+    } catch (e) { log(`${w.name} cards read err:`, String(e)); }
+
+    // Age in hours, so we can assert every card really is inside the window.
+    const H = { minute: 1 / 60, hour: 1, day: 24, week: 168, month: 720 };
+    const ages = cards.rows.map((r) => (r.ageNum != null ? r.ageNum * H[r.ageUnit] : null));
+    const dated = ages.filter((h) => h != null);
+    const overWindow = dated.filter((h) => h > w.maxAgeH);
+    const ksaCount = cards.rows.filter((r) => KSA_RE.test(r.text)).length;
+    const pakistanCount = cards.rows.filter((r) => /pakistan|karachi|lahore|islamabad/i.test(r.text)).length;
+    const offLocation = cards.rows.filter((r) => !KSA_RE.test(r.text)).map((r) => r.text.slice(0, 90));
+
+    const r = {
+      step: `search-${w.name}`,
+      urlOk, url,
+      // cardCount = every <li> in the list (matches LinkedIn's own "N results" banner);
+      // renderedCards = the subset with text, which the counts below are computed over.
+      cardCount: cards.count, renderedCards: cards.rows.length,
+      banner: cards.banner, noResultsBanner: cards.empty,
+      ksaCount, pakistanCount,
+      datedCards: dated.length, maxAgeHours: dated.length ? Math.max(...dated) : null,
+      withinWindow: overWindow.length === 0, overWindowHours: overWindow,
+      // Non-fatal: LinkedIn also surfaces region-wide REMOTE postings in a country search.
+      offLocation,
+      sample: cards.rows.slice(0, 6).map((x) => x.text.slice(0, 110)),
+      // Verdict for this window. Week must be non-empty; 24h may legitimately be empty.
+      ok: urlOk && overWindow.length === 0 && pakistanCount === 0 &&
+        (w.requireNonEmpty ? cards.count > 0 && ksaCount > 0 : true),
+    };
+    searchResults[w.name] = r;
+    results.steps.push(r); save();
+    log(`search-${w.name} =>`, JSON.stringify({
+      ok: r.ok, urlOk, cards: r.cardCount, ksaCount, pakistanCount,
+      maxAgeHours: r.maxAgeHours, withinWindow: r.withinWindow, banner: r.banner,
+    }));
+    log(`  ages(h):`, JSON.stringify(ages));
+    log(`  sample:`, JSON.stringify(r.sample, null, 1));
+    if (offLocation.length) log(`  off-location (non-fatal, LinkedIn region-wide remote):`, JSON.stringify(offLocation));
   }
-  const searchOk =
-    /[?&]keywords=GTM/i.test(searchUrl) && /f_WT=2/.test(searchUrl) &&
-    /f_TPR=r86400/.test(searchUrl) && /geoId=92000000/.test(searchUrl);
 
-  // Read the locations of the first result cards to confirm the Pakistan default is gone.
-  let sampleLocations = [];
-  try {
-    await page.waitForSelector('li[data-occludable-job-id], .scaffold-layout__list-item', { timeout: 12000 });
-    await page.waitForTimeout(1800);
-    sampleLocations = await page.evaluate(() => {
-      const out = [];
-      const els = document.querySelectorAll('.job-card-container__metadata-item, .artdeco-entity-lockup__caption');
-      for (const el of els) { const t = (el.innerText || '').trim(); if (t) out.push(t); if (out.length >= 8) break; }
-      return out;
-    });
-  } catch (e) { log('locations read err:', String(e)); }
-  const pakistanCount = sampleLocations.filter((s) => /pakistan/i.test(s)).length;
-
-  results.steps.push({ step: 'search', ok: searchOk, url: searchUrl, sampleLocations, pakistanCount });
-  save();
-  log('search =>', JSON.stringify({ ok: searchOk, url: searchUrl, pakistanCount, sampleLocations }));
+  // Test 4: the two search SHORTCUTS (the buttons above prove the URLs; this proves the
+  // bindings). Fired in the order week -> 24h so each press must CHANGE f_TPR — pressing
+  // the shortcut for the window you're already on would pass without proving anything.
+  // Caveat: Playwright's synthetic Alt+Shift can't detect a Windows *language-switch*
+  // hotkey collision; if you add a second keyboard layout, rebind in SHORTCUTS.
+  const shortcuts = [
+    { name: 'Alt+Shift+G', keys: 'Alt+Shift+KeyG', tpr: 'r604800' },
+    { name: 'Alt+G', keys: 'Alt+KeyG', tpr: 'r86400' },
+  ];
+  const shortcutResults = {};
+  for (const s of shortcuts) {
+    await page.bringToFront();
+    await evalSafe(page, () => { const a = document.activeElement; if (a && a.blur) a.blur(); });
+    await page.waitForSelector('#li-cn-search', { timeout: 15000 }).catch(() => log('WARN: panel missing before shortcut'));
+    await page.keyboard.press(s.keys);
+    let url = page.url();
+    const t0 = Date.now();
+    while (Date.now() - t0 < 15000) {
+      url = page.url();
+      if (new RegExp(`f_TPR=${s.tpr}`).test(url)) break;
+      await page.waitForTimeout(400);
+    }
+    const ok = new RegExp(`f_TPR=${s.tpr}`).test(url) && /geoId=100459316/.test(url);
+    shortcutResults[s.name] = { ok, url };
+    results.steps.push({ step: `shortcut-${s.name}`, ok, url });
+    save();
+    log(`shortcut ${s.name} =>`, JSON.stringify({ ok, expected: s.tpr }));
+  }
 
   results.verdict = {
     buttonPresent: diag.btnPresent,
@@ -320,8 +417,18 @@ try {
     keyboardCopy: kb.copied, keyboardAdvance: kb.advanced, keyboardDelayMs: kb.advanceMs,
     buttonCopy: bt.copied, buttonAdvance: bt.advanced, buttonDelayMs: bt.advanceMs,
     humanPacing: kb.advanceMs > 600 || bt.advanceMs > 600,
-    searchNavigates: searchOk,
-    searchPakistanCards: pakistanCount,
+    // Saved search, per recency window.
+    searchWeekOk: searchResults.week.ok,
+    searchWeekCards: searchResults.week.cardCount,
+    searchWeekKsaCards: searchResults.week.ksaCount,
+    searchWeekWithinWindow: searchResults.week.withinWindow,
+    search24hOk: searchResults['24h'].ok,
+    search24hCards: searchResults['24h'].cardCount, // 0 is acceptable on a quiet day
+    search24hKsaCards: searchResults['24h'].ksaCount,
+    search24hWithinWindow: searchResults['24h'].withinWindow,
+    searchPakistanCards: searchResults.week.pakistanCount + searchResults['24h'].pakistanCount,
+    shortcutAltG: shortcutResults['Alt+G'].ok,
+    shortcutAltShiftG: shortcutResults['Alt+Shift+G'].ok,
     markdownSaved: kb.mdSaved || bt.mdSaved,
     markdownValid: kb.mdValid || bt.mdValid,
     markdownFiles: listSavedMd().map((x) => x.file),

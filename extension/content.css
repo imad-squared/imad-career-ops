@@ -44,7 +44,7 @@
 #li-cn-toast {
   position: fixed;
   right: 20px;
-  bottom: 168px;
+  bottom: 206px; /* clears the 4-button panel (2 search windows + copy + auto) */
   z-index: 2147483647;
   max-width: 340px;
   padding: 10px 14px;
