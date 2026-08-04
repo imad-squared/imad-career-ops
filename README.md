@@ -69,6 +69,10 @@ Query details, and why each is what it is:
   phrases stay intact: *HSE Manager*, *EHS Manager*, *HSE Lead*, *EHS Lead*, *Health and
   Safety Manager*, *Health & Safety Manager*, *Safety Manager*, *HSE Supervisor*. **EHS**
   is the dominant form in Gulf industrial hiring, so don't drop it when editing.
+  Measured caveat: LinkedIn *also* does its own semantic expansion, so listing the variants
+  explicitly did not change the result count on the day this was tested (an
+  "Environment, Health and Safety Manager" posting already matched). They're kept because
+  that expansion is undocumented and can change — the explicit list is the guarantee.
 - **Workplace type — `any`, deliberately.** HSE is an on-site discipline (plants, sites,
   refineries); filtering to *Remote* returns close to nothing within one country. `any`
   omits `f_WT` from the URL entirely.
