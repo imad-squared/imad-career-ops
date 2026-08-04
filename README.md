@@ -64,9 +64,11 @@ Query details, and why each is what it is:
   guessed — to re-resolve it (or switch countries), type the place into the Jobs location
   box, pick the suggestion, and copy the `geoId` out of the resulting URL.
 - **Keywords — a boolean OR, not one phrase.** LinkedIn matches the posted title verbatim,
-  and the same job is advertised as *HSE Manager*, *Health & Safety Manager*, *HSE Lead*,
-  *EHS Manager*, and so on. A single bare phrase leaves the 24-hour window empty most days,
-  so the default query ORs the common variants (each quoted, so the phrases stay intact).
+  and the same job is advertised under many names. A single bare phrase leaves the 24-hour
+  window empty most days, so the default query ORs eight variants — each quoted so the
+  phrases stay intact: *HSE Manager*, *EHS Manager*, *HSE Lead*, *EHS Lead*, *Health and
+  Safety Manager*, *Health & Safety Manager*, *Safety Manager*, *HSE Supervisor*. **EHS**
+  is the dominant form in Gulf industrial hiring, so don't drop it when editing.
 - **Workplace type — `any`, deliberately.** HSE is an on-site discipline (plants, sites,
   refineries); filtering to *Remote* returns close to nothing within one country. `any`
   omits `f_WT` from the URL entirely.
@@ -145,7 +147,11 @@ All knobs live at the top of the two files, each commented as a prior:
   `keywords`, `workplaceType` (`remote`/`onsite`/`hybrid`/`any`), `location` + `geoId`,
   `sortByDate`, and the short `label` shown on the buttons. The two recency windows live
   in the `RECENCY` object next to it (`f_TPR=r86400` = 24h, `r604800` = 7 days).
-- **Shortcuts:** the `SHORTCUTS` object in `extension/content.js`.
+- **Shortcuts:** the `SHORTCUTS` object in `extension/content.js`. They match on
+  `event.code`, so they're keyboard-layout independent. One Windows caveat: if you install
+  a **second keyboard layout**, `Alt + Shift` becomes the OS language-switch hotkey and can
+  swallow `Alt + Shift + G` before the page sees it — rebind `searchWeek` to something like
+  `{ alt: true, shift: false, code: 'KeyW' }` if that happens.
 
 After any edit, click the reload icon on the extension card in `chrome://extensions`.
 

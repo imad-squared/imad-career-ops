@@ -25,11 +25,13 @@
   // ===== Saved search (edit these to change what Alt+G / Alt+Shift+G open) =====
   const SEARCH = {
     // Boolean OR, because LinkedIn indexes the posted TITLE verbatim: the same role is
-    // advertised as "HSE Manager", "Health & Safety Manager", "HSE Lead", etc. A single
-    // bare phrase makes the 24h window empty most days. Quotes keep each phrase intact
-    // (an unquoted "HSE Manager" also matches any "manager" posting mentioning HSE).
+    // advertised as "HSE Manager", "EHS Manager", "Health & Safety Manager", "HSE Lead",
+    // etc. A single bare phrase makes the 24h window empty most days. Quotes keep each
+    // phrase intact (an unquoted HSE Manager also matches any "manager" posting that
+    // merely mentions HSE). EHS is the dominant form in Gulf industrial hiring, so it
+    // must be here — dropping it measurably shrinks the 24h window.
     keywords:
-      '("HSE Manager" OR "HSE Lead" OR "Health and Safety Manager" OR "Health & Safety Manager" OR "Safety Manager" OR "HSE Supervisor")',
+      '("HSE Manager" OR "EHS Manager" OR "HSE Lead" OR "EHS Lead" OR "Health and Safety Manager" OR "Health & Safety Manager" OR "Safety Manager" OR "HSE Supervisor")',
     // 'any' deliberately: HSE is an on-site discipline (plants, sites, refineries), so
     // filtering to remote returns ~nothing in a single country. 'any' omits f_WT entirely.
     workplaceType: 'any', // 'remote' | 'onsite' | 'hybrid' | 'any'

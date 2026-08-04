@@ -382,6 +382,35 @@ try {
     if (offLocation.length) log(`  off-location (non-fatal, LinkedIn region-wide remote):`, JSON.stringify(offLocation));
   }
 
+  // Test 4: the two search SHORTCUTS (the buttons above prove the URLs; this proves the
+  // bindings). Fired in the order week -> 24h so each press must CHANGE f_TPR — pressing
+  // the shortcut for the window you're already on would pass without proving anything.
+  // Caveat: Playwright's synthetic Alt+Shift can't detect a Windows *language-switch*
+  // hotkey collision; if you add a second keyboard layout, rebind in SHORTCUTS.
+  const shortcuts = [
+    { name: 'Alt+Shift+G', keys: 'Alt+Shift+KeyG', tpr: 'r604800' },
+    { name: 'Alt+G', keys: 'Alt+KeyG', tpr: 'r86400' },
+  ];
+  const shortcutResults = {};
+  for (const s of shortcuts) {
+    await page.bringToFront();
+    await evalSafe(page, () => { const a = document.activeElement; if (a && a.blur) a.blur(); });
+    await page.waitForSelector('#li-cn-search', { timeout: 15000 }).catch(() => log('WARN: panel missing before shortcut'));
+    await page.keyboard.press(s.keys);
+    let url = page.url();
+    const t0 = Date.now();
+    while (Date.now() - t0 < 15000) {
+      url = page.url();
+      if (new RegExp(`f_TPR=${s.tpr}`).test(url)) break;
+      await page.waitForTimeout(400);
+    }
+    const ok = new RegExp(`f_TPR=${s.tpr}`).test(url) && /geoId=100459316/.test(url);
+    shortcutResults[s.name] = { ok, url };
+    results.steps.push({ step: `shortcut-${s.name}`, ok, url });
+    save();
+    log(`shortcut ${s.name} =>`, JSON.stringify({ ok, expected: s.tpr }));
+  }
+
   results.verdict = {
     buttonPresent: diag.btnPresent,
     descriptionFound: !!diag.desc,
@@ -398,6 +427,8 @@ try {
     search24hKsaCards: searchResults['24h'].ksaCount,
     search24hWithinWindow: searchResults['24h'].withinWindow,
     searchPakistanCards: searchResults.week.pakistanCount + searchResults['24h'].pakistanCount,
+    shortcutAltG: shortcutResults['Alt+G'].ok,
+    shortcutAltShiftG: shortcutResults['Alt+Shift+G'].ok,
     markdownSaved: kb.mdSaved || bt.mdSaved,
     markdownValid: kb.mdValid || bt.mdValid,
     markdownFiles: listSavedMd().map((x) => x.file),
