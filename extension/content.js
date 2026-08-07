@@ -254,18 +254,22 @@
     return labels;
   }
 
+  // Strip LinkedIn's repeated-prefix artefact. The bare title link reads
+  // "Commissioning Manager Commissioning Manager with verification" — the duplicate is a
+  // prefix, not an exact halving, so look for the longest immediately-repeated run of
+  // words rather than splitting down the middle.
+  function undouble(t) {
+    const w = t.split(' ');
+    for (let k = Math.floor(w.length / 2); k >= 1; k--) {
+      if (w.slice(0, k).join(' ') === w.slice(k, 2 * k).join(' ')) return w.slice(0, k).join(' ');
+    }
+    return t;
+  }
+
   function cardTitle(li) {
     const el = firstEl(CARD_TITLE_SELECTORS, li);
-    if (el) {
-      const t = cleanInline(el.innerText);
-      // The bare link (last selector) yields the doubled text; keep only the first half
-      // when it is an exact repetition.
-      if (t) {
-        const half = t.slice(0, Math.floor(t.length / 2)).trim();
-        if (half && t === half + ' ' + half) return half;
-        return t;
-      }
-    }
+    // The <strong> (preferred) is already clean; only the bare-link fallback is doubled.
+    if (el) { const t = cleanInline(el.innerText); if (t) return undouble(t); }
     const line = (li.innerText || '').split('\n').map((s) => s.trim()).find(Boolean);
     return line || '';
   }
