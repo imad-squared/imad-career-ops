@@ -762,6 +762,7 @@
           // triage it here too — otherwise the first job of every run gets re-saved.
           auto.skips.seen = (auto.skips.seen || 0) + 1;
           auto.misses = 0;
+          auto.count++; // counts against MAX_JOBS: this branch still navigates
           markSaved(openId);
           toast('↷ already saved — moving on');
           gapMs = humanizer.glanceMs ? humanizer.glanceMs().ms : 700;
@@ -772,6 +773,7 @@
           const d = humanizer.peekDwellMs ? humanizer.peekDwellMs({ wordCount: j ? j.wordCount : 0 }).ms : 3000;
           auto.peeked++;
           auto.misses = 0;
+          auto.count++; // counts against MAX_JOBS: a peek is a real page load
           toast(`👀 skimming a ${peekReason === 'promoted-peek' ? 'promoted' : 'off-target'} post — not saving`);
           gapMs = d;
         } else {
@@ -807,7 +809,9 @@
     } finally {
       // A page where EVERYTHING was filtered out looks identical to a broken run, so
       // say which filter ate it and how to turn that filter off.
-      if (!auto.count && skipTotal()) {
+      // Keyed on SAVED, not on count — count now includes peeks and already-saved jobs,
+      // so a page that produced no new .md would otherwise stop explaining itself.
+      if (!auto.saved && skipTotal()) {
         console.info('[Copy+Next] auto-run skipped everything:', JSON.stringify(auto.skips));
         toast(`⏹ Nothing new here — skipped ${skipSummary()}. Loosen SKIP in targeting.js or clear the saved list.`, true);
       } else if (skipTotal()) {

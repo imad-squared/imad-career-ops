@@ -95,11 +95,16 @@ check('glance median is a plausible eye-flick (0.3–2 s)', gMed >= 300 && gMed 
 check('glance has real variance (not a constant)', sd(glances) / mean(glances) > 0.2, `CV=${(sd(glances) / mean(glances)).toFixed(2)}`);
 check('a run of 5 skips is seconds, not a machine burst', gMed * 5 >= 1500, `5x median=${Math.round(gMed * 5)}ms`);
 
-// Glances share the SAME latent tempo as advances, so a slow stretch slows skips too.
+// Glances share the SAME latent tempo as advances, so a slow stretch slows the skips too.
+// Interleaving the two calls is the point: if glanceMs() kept its own tempo state, the
+// tempo each call sees would be independent and this correlation would collapse.
 const hmix = H.createHumanizer(1357);
-const mixed = [];
-for (let i = 0; i < 3000; i++) mixed.push(i % 2 ? hmix.glanceMs().ms : hmix.glanceMs().ms);
-check('glance series is positively autocorrelated (shares the AR(1) tempo)', autocorr1(mixed) > 0.1, `r1=${autocorr1(mixed).toFixed(3)}`);
+const mixTempo = [];
+for (let i = 0; i < 3000; i++) {
+  mixTempo.push(i % 2 ? hmix.glanceMs().tempo : hmix.advanceDelayMs({ wordCount: 300 }).tempo);
+}
+check('glances and advances share one AR(1) tempo (interleaved series stays autocorrelated)',
+  autocorr1(mixTempo) > 0.3, `r1=${autocorr1(mixTempo).toFixed(3)}`);
 
 const hp = H.createHumanizer(864);
 const peekShort = mean(Array.from({ length: 1500 }, () => hp.peekDwellMs({ wordCount: 30 }).ms));

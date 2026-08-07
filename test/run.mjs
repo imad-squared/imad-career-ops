@@ -330,7 +330,10 @@ try {
     }
 
     // Every assertion derived from the active profile — no hardcoded query.
-    const decodedKw = decodeURIComponent((url.match(/[?&]keywords=([^&]*)/) || [])[1] || '').replace(/\+/g, ' ');
+    // URLSearchParams (not a regex + manual +→space) so '&' inside a quoted phrase like
+    // "Health & Safety Manager" can't truncate the capture, and %2B isn't mangled.
+    let decodedKw = '';
+    try { decodedKw = new URL(url).searchParams.get('keywords') || ''; } catch (_) {}
     const urlOk =
       decodedKw === PROFILE.keywords &&
       new RegExp(`f_TPR=${w.tpr}`).test(url) &&
@@ -424,7 +427,11 @@ try {
       if (new RegExp(`f_TPR=${s.tpr}`).test(url)) break;
       await page.waitForTimeout(400);
     }
-    const ok = new RegExp(`f_TPR=${s.tpr}`).test(url) && /geoId=100459316/.test(url);
+    // Profile-derived, like the button assertions — a hardcoded geoId here silently
+    // fails every shortcut the moment the active profile changes.
+    const ok =
+      new RegExp(`f_TPR=${s.tpr}`).test(url) &&
+      (PROFILE.geoId ? new RegExp(`geoId=${PROFILE.geoId}\\b`).test(url) : true);
     shortcutResults[s.name] = { ok, url };
     results.steps.push({ step: `shortcut-${s.name}`, ok, url });
     save();
@@ -483,23 +490,37 @@ try {
 
     // Wiring check: start a SHORT auto-run and confirm the extension actually dims and
     // badges the cards it steps over, then stop it with Esc.
-    await page.bringToFront();
-    await evalSafe(page, () => { const a = document.activeElement; if (a && a.blur) a.blur(); });
-    await page.keyboard.press('Alt+KeyA');
-    const t0 = Date.now();
-    let marked = 0;
-    while (Date.now() - t0 < 75000) {
-      marked = await page.evaluate(() => document.querySelectorAll('.li-cn-skip[data-li-cn-skip]').length).catch(() => 0);
-      if (marked > 0) break;
-      await page.waitForTimeout(1500);
+    //
+    // OPT-IN (E2E_AUTORUN=1). This is the one part of the harness that LOOPS the account,
+    // which is exactly the activity the README's risk note is about. Running `npm run
+    // test:e2e` must not do that on its own — the probe above is the selector-drift
+    // signal and carries no such risk, so nothing important is lost by default.
+    if (!process.env.E2E_AUTORUN) {
+      log('triage marks => SKIPPED (set E2E_AUTORUN=1 to exercise the auto-run against your account)');
+      triage.marks = null;
+      triage.autorunSkipped = true;
+    } else {
+      await page.bringToFront();
+      await evalSafe(page, () => { const a = document.activeElement; if (a && a.blur) a.blur(); });
+      await page.keyboard.press('Alt+KeyA');
+      const t0 = Date.now();
+      // NOTE: 0 marks is NOT a failure — the first advance sits behind an orientation
+      // pause, waitForJobReady and a batchGapMs that can draw a multi-minute long idle,
+      // and if the very next card is eligible there is nothing to skip. Selector drift is
+      // reported by triagePromotedDetected, not by this.
+      while (Date.now() - t0 < 75000) {
+        const marked = await page.evaluate(() => document.querySelectorAll('.li-cn-skip[data-li-cn-skip]').length).catch(() => 0);
+        if (marked > 0) break;
+        await page.waitForTimeout(1500);
+      }
+      triage.marks = await page.evaluate(() => ({
+        skipped: [...document.querySelectorAll('.li-cn-skip[data-li-cn-skip]')].map((el) => el.getAttribute('data-li-cn-skip')),
+        saved: document.querySelectorAll('.li-cn-saved').length,
+      }));
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(1200);
+      log('triage marks =>', JSON.stringify(triage.marks));
     }
-    triage.marks = await page.evaluate(() => ({
-      skipped: [...document.querySelectorAll('.li-cn-skip[data-li-cn-skip]')].map((el) => el.getAttribute('data-li-cn-skip')),
-      saved: document.querySelectorAll('.li-cn-saved').length,
-    }));
-    await page.keyboard.press('Escape');
-    await page.waitForTimeout(1200);
-    log('triage marks =>', JSON.stringify(triage.marks));
   } catch (e) {
     triage.error = String(e).slice(0, 300);
     log('triage probe err:', String(e).slice(0, 200));
@@ -534,7 +555,9 @@ try {
     triageFooterLabelsRead: triage.probe ? triage.probe.withFooterLabels : 0,
     triagePromotedDetected: triage.probe ? triage.probe.promoted : 0,
     triageViewedDetected: triage.probe ? triage.probe.viewed : 0,
-    triageCardsMarkedSkipped: triage.marks ? triage.marks.skipped.length : 0,
+    // Opt-in (E2E_AUTORUN=1). null = not exercised; 0 = ran but had nothing to skip,
+    // which is a legitimate outcome, NOT a drift signal.
+    triageCardsMarkedSkipped: triage.marks ? triage.marks.skipped.length : null,
     triageSkipReasons: triage.marks ? [...new Set(triage.marks.skipped)] : [],
     markdownSaved: kb.mdSaved || bt.mdSaved,
     markdownValid: kb.mdValid || bt.mdValid,
