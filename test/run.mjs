@@ -17,6 +17,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
+// Load the pure targeting module the same way the Node unit tests do, so this harness
+// asserts against the ACTIVE profile instead of a hardcoded query. Switching profiles in
+// extension/targeting.js must not break the e2e.
+(0, eval)(fs.readFileSync(new URL('../extension/targeting.js', import.meta.url), 'utf8'));
+const TGT = globalThis.__liTargeting;
+const PROFILE = TGT.activeProfile();
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 const extPath = path.join(projectRoot, 'extension');
@@ -296,7 +303,17 @@ try {
     { name: 'week', sel: '#li-cn-search-week', tpr: 'r604800', maxAgeH: 24 * 7, requireNonEmpty: true },
     { name: '24h', sel: '#li-cn-search', tpr: 'r86400', maxAgeH: 24, requireNonEmpty: false },
   ];
-  const KSA_RE = /saudi arabia|riyadh|jeddah|jiddah|dammam|khobar|dhahran|jubail|yanbu|makkah|mecca|medina|madinah|tabuk|abha|neom|ksa\b/i;
+  // Location assertions only mean something when the profile PINS a country. The
+  // go-to-market profile is deliberately Worldwide, so there is nothing to assert —
+  // we report the spread instead of failing on it.
+  const GEO_EXPECT = {
+    hse: {
+      label: 'Saudi Arabia',
+      re: /saudi arabia|riyadh|jeddah|jiddah|dammam|khobar|dhahran|jubail|yanbu|makkah|mecca|medina|madinah|tabuk|abha|neom|ksa\b/i,
+      forbid: /pakistan|karachi|lahore|islamabad/i,
+    },
+  };
+  const geoExpect = GEO_EXPECT[PROFILE.key] || null;
   const searchResults = {};
 
   for (const w of windows) {
@@ -312,12 +329,15 @@ try {
       await page.waitForTimeout(400);
     }
 
+    // Every assertion derived from the active profile — no hardcoded query.
+    const decodedKw = decodeURIComponent((url.match(/[?&]keywords=([^&]*)/) || [])[1] || '').replace(/\+/g, ' ');
     const urlOk =
-      /[?&]keywords=[^&]*HSE/i.test(url) &&
+      decodedKw === PROFILE.keywords &&
       new RegExp(`f_TPR=${w.tpr}`).test(url) &&
-      /geoId=100459316/.test(url) && // Saudi Arabia, resolved from LinkedIn's typeahead
-      /sortBy=DD/.test(url) &&
-      !/f_WT=/.test(url); // workplaceType 'any' must NOT emit a workplace filter
+      (PROFILE.geoId ? new RegExp(`geoId=${PROFILE.geoId}\\b`).test(url) : true) &&
+      (PROFILE.sortByDate ? /sortBy=DD/.test(url) : true) &&
+      // 'any' must NOT emit a workplace filter; anything else must.
+      (PROFILE.workplaceType === 'any' ? !/f_WT=/.test(url) : /f_WT=/.test(url));
 
     // Read the result cards: how many, where, and how old.
     let cards = { count: 0, rows: [], banner: '', empty: false };
@@ -350,9 +370,9 @@ try {
     const ages = cards.rows.map((r) => (r.ageNum != null ? r.ageNum * H[r.ageUnit] : null));
     const dated = ages.filter((h) => h != null);
     const overWindow = dated.filter((h) => h > w.maxAgeH);
-    const ksaCount = cards.rows.filter((r) => KSA_RE.test(r.text)).length;
-    const pakistanCount = cards.rows.filter((r) => /pakistan|karachi|lahore|islamabad/i.test(r.text)).length;
-    const offLocation = cards.rows.filter((r) => !KSA_RE.test(r.text)).map((r) => r.text.slice(0, 90));
+    const ksaCount = geoExpect ? cards.rows.filter((r) => geoExpect.re.test(r.text)).length : cards.rows.length;
+    const pakistanCount = geoExpect ? cards.rows.filter((r) => geoExpect.forbid.test(r.text)).length : 0;
+    const offLocation = geoExpect ? cards.rows.filter((r) => !geoExpect.re.test(r.text)).map((r) => r.text.slice(0, 90)) : [];
 
     const r = {
       step: `search-${w.name}`,
@@ -411,7 +431,85 @@ try {
     log(`shortcut ${s.name} =>`, JSON.stringify({ ok, expected: s.tpr }));
   }
 
+  // Test 5: card triage against the LIVE DOM. This is the check a Node unit test
+  // structurally cannot make. `window.__liCopyNext` lives in the content script's
+  // ISOLATED world and is unreachable from page.evaluate, so we verify the two things
+  // that are observable from the page: (a) the selectors the extension classifies with
+  // still match real markup, and (b) the extension's own skip marks land on the DOM.
+  //
+  // The recommended collection is used because it is dense with sponsored cards
+  // (measured 16/24 promoted), so "0 promoted found" there is a real failure signal
+  // rather than an empty sample.
+  const triage = { probe: null, marks: null };
+  try {
+    await page.goto('https://www.linkedin.com/jobs/collections/recommended/', { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('li[data-occludable-job-id], .scaffold-layout__list-item', { timeout: 25000 });
+    await page.waitForTimeout(2000);
+    // The list is virtualized — force the cards to render before reading them.
+    await page.evaluate(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const li = document.querySelector('li[data-occludable-job-id]');
+      let sc = li ? li.parentElement : null;
+      while (sc && sc !== document.body && sc.scrollHeight <= sc.clientHeight + 4) sc = sc.parentElement;
+      for (let i = 0; i < 12; i++) { (sc && sc !== document.body ? sc : window).scrollBy(0, 500); await sleep(400); }
+    });
+    await page.waitForTimeout(1200);
+
+    triage.probe = await page.evaluate(() => {
+      const lis = [...document.querySelectorAll('li[data-occludable-job-id], .scaffold-layout__list-item')];
+      const labelsOf = (li) => [...li.querySelectorAll('.job-card-container__footer-item, .job-card-container__footer-job-state, .job-card-list__footer-wrapper li, .job-card-container__footer-wrapper li')]
+        .map((el) => (el.innerText || '').replace(/\s+/g, ' ').trim().toLowerCase()).filter(Boolean);
+      const rows = lis.map((li) => {
+        const strong = li.querySelector('a.job-card-container__link strong, a.job-card-list__title strong');
+        const labels = labelsOf(li);
+        return {
+          rendered: !!(li.innerText || '').trim(),
+          title: strong ? (strong.innerText || '').replace(/\s+/g, ' ').trim() : null,
+          promoted: labels.some((l) => /^promoted\b/.test(l)),
+          viewed: labels.some((l) => /^viewed\b/.test(l)),
+          labelled: labels.length > 0,
+        };
+      }).filter((r) => r.rendered);
+      return {
+        rendered: rows.length,
+        withTitle: rows.filter((r) => r.title).length,
+        withFooterLabels: rows.filter((r) => r.labelled).length,
+        promoted: rows.filter((r) => r.promoted).length,
+        viewed: rows.filter((r) => r.viewed).length,
+        sampleTitles: rows.slice(0, 5).map((r) => r.title),
+      };
+    });
+    log('triage probe =>', JSON.stringify(triage.probe));
+
+    // Wiring check: start a SHORT auto-run and confirm the extension actually dims and
+    // badges the cards it steps over, then stop it with Esc.
+    await page.bringToFront();
+    await evalSafe(page, () => { const a = document.activeElement; if (a && a.blur) a.blur(); });
+    await page.keyboard.press('Alt+KeyA');
+    const t0 = Date.now();
+    let marked = 0;
+    while (Date.now() - t0 < 75000) {
+      marked = await page.evaluate(() => document.querySelectorAll('.li-cn-skip[data-li-cn-skip]').length).catch(() => 0);
+      if (marked > 0) break;
+      await page.waitForTimeout(1500);
+    }
+    triage.marks = await page.evaluate(() => ({
+      skipped: [...document.querySelectorAll('.li-cn-skip[data-li-cn-skip]')].map((el) => el.getAttribute('data-li-cn-skip')),
+      saved: document.querySelectorAll('.li-cn-saved').length,
+    }));
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(1200);
+    log('triage marks =>', JSON.stringify(triage.marks));
+  } catch (e) {
+    triage.error = String(e).slice(0, 300);
+    log('triage probe err:', String(e).slice(0, 200));
+  }
+  results.steps.push({ step: 'triage', ...triage });
+  save();
+
   results.verdict = {
+    profile: PROFILE.key,
+    profileLabel: PROFILE.label,
     buttonPresent: diag.btnPresent,
     descriptionFound: !!diag.desc,
     keyboardCopy: kb.copied, keyboardAdvance: kb.advanced, keyboardDelayMs: kb.advanceMs,
@@ -420,15 +518,24 @@ try {
     // Saved search, per recency window.
     searchWeekOk: searchResults.week.ok,
     searchWeekCards: searchResults.week.cardCount,
-    searchWeekKsaCards: searchResults.week.ksaCount,
+    searchWeekOnLocationCards: searchResults.week.ksaCount,
     searchWeekWithinWindow: searchResults.week.withinWindow,
     search24hOk: searchResults['24h'].ok,
     search24hCards: searchResults['24h'].cardCount, // 0 is acceptable on a quiet day
-    search24hKsaCards: searchResults['24h'].ksaCount,
+    search24hOnLocationCards: searchResults['24h'].ksaCount,
     search24hWithinWindow: searchResults['24h'].withinWindow,
-    searchPakistanCards: searchResults.week.pakistanCount + searchResults['24h'].pakistanCount,
+    // Only meaningful when the profile pins a country (see GEO_EXPECT).
+    geoAsserted: !!geoExpect,
+    searchForbiddenLocationCards: searchResults.week.pakistanCount + searchResults['24h'].pakistanCount,
     shortcutAltG: shortcutResults['Alt+G'].ok,
     shortcutAltShiftG: shortcutResults['Alt+Shift+G'].ok,
+    // Triage: selector health + proof the skip marks reach the DOM.
+    triageTitlesRead: triage.probe ? triage.probe.withTitle : 0,
+    triageFooterLabelsRead: triage.probe ? triage.probe.withFooterLabels : 0,
+    triagePromotedDetected: triage.probe ? triage.probe.promoted : 0,
+    triageViewedDetected: triage.probe ? triage.probe.viewed : 0,
+    triageCardsMarkedSkipped: triage.marks ? triage.marks.skipped.length : 0,
+    triageSkipReasons: triage.marks ? [...new Set(triage.marks.skipped)] : [],
     markdownSaved: kb.mdSaved || bt.mdSaved,
     markdownValid: kb.mdValid || bt.mdValid,
     markdownFiles: listSavedMd().map((x) => x.file),

@@ -86,6 +86,32 @@
       MAX_JOBS: 40, // hard cap on jobs processed per auto-run
       MAX_SESSION_MS: 900000, // hard cap on auto-run duration (15 min)
     },
+
+    // -- SKIP: what it COSTS to pass over a card (promoted / already-saved /
+    //    off-target). targeting.js decides *whether* to skip; this decides how
+    //    long that takes. Skipping must never be free: a filter that rejects
+    //    cards in 0 ms is a new bot tell, and a run of five skipped cards at
+    //    machine speed is exactly the burst the rest of this engine avoids. A
+    //    person's eye lands on the card, reads the title and the little
+    //    "Promoted" tag, and moves on — a few hundred ms, every time, with
+    //    variance. Every number is a prior. --
+    SKIP: {
+      GLANCE_MEDIAN_MS: 620, // prior: median cost of noticing a card and rejecting it
+      GLANCE_SIGMA: 0.5, // prior: log-normal sigma (heavy right tail — double-takes)
+      GLANCE_MIN_MS: 220, // prior: floor; still far above the sub-human 80–100 ms tell
+      GLANCE_MAX_MS: 3000, // prior: ceiling on a single glance
+      SCAN_CAP_MS: 25000, // prior: ceiling on ONE forward scan over skipped cards
+      MANUAL_SCAN_CAP_MS: 1800, // prior: Alt+C is one keypress — keep its scan snappy
+      // A "peek": a card that got opened but will NOT be saved (see
+      // targeting.js SKIP.*_PEEK_PROB). You skim it, realise it's not for you,
+      // and move on — shorter than a real read, but not instant.
+      PEEK_PER_WORD_MS: 3, // prior: ms of skim per word when peeking
+      PEEK_READ_CAP_MS: 5000, // prior: ceiling on the peek's content-scaled part
+      PEEK_DWELL_MEDIAN_MS: 2600, // prior: median log-normal peek dwell
+      PEEK_DWELL_SIGMA: 0.55, // prior
+      PEEK_MIN_MS: 1500, // prior
+      PEEK_CAP_MS: 20000, // prior
+    },
   };
 
   // ===== RNG (mulberry32) + samplers, all threaded explicitly ==========
@@ -123,11 +149,19 @@
     // TempoState: start from the stationary distribution.
     let logTempo = gauss(rng) * CONFIG.TEMPO_SIGMA_STAT;
 
-    function advanceDelayMs({ wordCount = 0, optionCount = 2, consequence = 'navigate' } = {}) {
-      // --- Technique 1: AR(1) tempo update (multiplies everything) ---
+    // Technique 1, factored out so EVERY timed act (advance, glance, peek) steps the
+    // same latent tempo. Sharing one AR(1) state is the point: a slow stretch has to
+    // slow the skipped cards down too, or the skips would break the autocorrelation
+    // the rest of the engine exists to produce.
+    function stepTempo() {
       const innov = Math.sqrt(1 - CONFIG.TEMPO_PHI * CONFIG.TEMPO_PHI) * CONFIG.TEMPO_SIGMA_STAT;
       logTempo = CONFIG.TEMPO_PHI * logTempo + innov * gauss(rng);
-      const tempo = T * Math.exp(logTempo);
+      return T * Math.exp(logTempo);
+    }
+
+    function advanceDelayMs({ wordCount = 0, optionCount = 2, consequence = 'navigate' } = {}) {
+      // --- Technique 1: AR(1) tempo update (multiplies everything) ---
+      const tempo = stepTempo();
 
       // --- Technique 2: content-scaled READ (skim) + DECIDE ---
       const verifyMs = Math.min(CONFIG.VERIFY_CAP_MS, CONFIG.VERIFY_PER_WORD_MS * Math.max(0, wordCount) * rRead);
@@ -168,10 +202,38 @@
       return rng() < CONFIG.BATCH.MODALITY_KEYBOARD_PROB ? 'keyboard' : 'click';
     }
 
+    // Cost of passing over ONE card the targeting filter rejected: read the title,
+    // clock the "Promoted"/"Viewed" tag, move on. rRead applies because this is a
+    // reading act — per CLAUDE.md invariant #2 the L2 multiplier belongs on reading
+    // and text entry, and nowhere near the motor stages.
+    function glanceMs() {
+      const K = CONFIG.SKIP;
+      const tempo = stepTempo();
+      const base = lognormal(rng, K.GLANCE_MEDIAN_MS, K.GLANCE_SIGMA) * rRead;
+      const ms = clamp(CONFIG.PACE_MULTIPLIER * tempo * base, K.GLANCE_MIN_MS, K.GLANCE_MAX_MS);
+      return { ms, tempo };
+    }
+
+    // Dwell for a "peek" — a card that got opened but will NOT be saved. Shorter
+    // than a real read, still content-scaled, never instant.
+    function peekDwellMs({ wordCount = 0 } = {}) {
+      const K = CONFIG.SKIP;
+      const tempo = stepTempo();
+      const read = Math.min(K.PEEK_READ_CAP_MS, K.PEEK_PER_WORD_MS * Math.max(0, wordCount) * rRead);
+      const dwell = lognormal(rng, K.PEEK_DWELL_MEDIAN_MS, K.PEEK_DWELL_SIGMA);
+      const ms = clamp(CONFIG.PACE_MULTIPLIER * tempo * (read + dwell), K.PEEK_MIN_MS, K.PEEK_CAP_MS);
+      return { ms, tempo };
+    }
+
     return {
       advanceDelayMs,
       batchGapMs,
       nextModality,
+      glanceMs,
+      peekDwellMs,
+      // Exposed so targeting.js's peek coin-flips draw from THIS seeded stream
+      // instead of global Math.random (CLAUDE.md: thread the RNG explicitly).
+      rand: () => rng(),
       seed: s,
       actor: { T, rRead, D },
     };

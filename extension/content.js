@@ -6,51 +6,41 @@
  *   • Alt+C  or  📋 Copy + Next   — copy the current job (title, company, location,
  *                                   link, description) to the clipboard, then, after a
  *                                   human-paced delay, advance to the next job.
- *   • Alt+G        or  🔎 HSE · KSA · 24h   — jump to a LinkedIn Jobs search pre-filtered
+ *   • Alt+G        or  🔎 <profile> · 24h   — jump to a LinkedIn Jobs search pre-filtered
  *                                   to your saved query, posted in the past 24 hours.
- *   • Alt+Shift+G  or  🔎 HSE · KSA · Week  — the same query over the past week.
- *                                   (Default query: HSE / Health & Safety Manager roles
- *                                   in Saudi Arabia, newest first.)
+ *   • Alt+Shift+G  or  🔎 <profile> · Week  — the same query over the past week.
+ *                                   (Active profile lives in targeting.js; default is
+ *                                   go-to-market roles, newest first.)
  *
- * Human pacing (the delay before advancing) comes from humanize.js — a pure timing
- * engine that ports the two most load-bearing techniques from CLAUDE.md: autocorrelated
- * tempo (Technique 1) and content-scaled think-time (Technique 2). This file is only the
- * thin driver: it measures the DOM, asks the engine for a delay, sleeps, then acts.
+ * This file is only the thin DRIVER. It owns no numbers and no policy:
+ *   • humanize.js  — how long everything takes (autocorrelated tempo, content-scaled
+ *                    think-time, glance cost, peek dwell).
+ *   • targeting.js — which search to open, and whether a given card is worth opening
+ *                    (promoted / already saved / already viewed / off-target).
+ *   • jobmd.js     — how a job becomes a Markdown card.
+ * The driver measures the DOM, asks those modules, sleeps, then acts.
  */
 (() => {
   'use strict';
   if (window.__liCopyNextLoaded) return;
   window.__liCopyNextLoaded = true;
 
-  // ===== Saved search (edit these to change what Alt+G / Alt+Shift+G open) =====
-  const SEARCH = {
-    // Boolean OR, because LinkedIn indexes the posted TITLE verbatim: the same role is
-    // advertised as "HSE Manager", "EHS Manager", "Health & Safety Manager", "HSE Lead",
-    // etc. A single bare phrase makes the 24h window empty most days. Quotes keep each
-    // phrase intact (an unquoted HSE Manager also matches any "manager" posting that
-    // merely mentions HSE). EHS is the dominant form in Gulf industrial hiring, so it
-    // must be here — dropping it measurably shrinks the 24h window.
-    keywords:
-      '("HSE Manager" OR "EHS Manager" OR "HSE Lead" OR "EHS Lead" OR "Health and Safety Manager" OR "Health & Safety Manager" OR "Safety Manager" OR "HSE Supervisor")',
-    // 'any' deliberately: HSE is an on-site discipline (plants, sites, refineries), so
-    // filtering to remote returns ~nothing in a single country. 'any' omits f_WT entirely.
-    workplaceType: 'any', // 'remote' | 'onsite' | 'hybrid' | 'any'
-    // LinkedIn defaults the location to your own profile region (Pakistan) unless told
-    // otherwise, so BOTH of these are required — geoId is what actually filters, the
-    // location text is what the UI displays. '' leaves LinkedIn's default.
-    location: 'Saudi Arabia',
-    // Resolved live from LinkedIn's own location typeahead (not guessed) — see README.
-    geoId: '100459316', // LinkedIn geoId: 100459316 = Saudi Arabia
-    sortByDate: true, // most recent first (matters for a 24h/1-week window)
-    label: 'HSE · KSA', // short button/toast label (keywords are too long to display)
+  // ===== Targeting (which search, and which cards are worth opening) =========
+  // The saved-search profiles, the recency windows and every triage decision live in
+  // targeting.js (pure, unit-tested). Edit THAT file to retarget; this file only
+  // measures the DOM and executes. The stub keeps the copy path alive if the module
+  // somehow failed to load — degrading to "open everything", never to a crash.
+  const TGT = globalThis.__liTargeting || {
+    RECENCY: { day: { key: '24h', tpr: 'r86400', label: '24h' }, week: { key: 'week', tpr: 'r604800', label: 'Week' } },
+    activeProfile: () => ({ label: 'Search', keywords: '', workplaceType: 'any', location: '', geoId: '', sortByDate: true }),
+    buildSearchUrl: () => location.href,
+    decideCard: () => ({ action: 'open', reason: 'eligible' }),
+    pruneSeen: (m) => m,
+    REASON_LABEL: {},
+    SKIP: { SEEN_MAX: 2000 },
   };
-
-  // The two recency windows the search buttons offer. LinkedIn's f_TPR is a
-  // "posted within the last N seconds" filter, so r86400 = 24h, r604800 = 7 days.
-  const RECENCY = {
-    day: { key: '24h', tpr: 'r86400', label: '24h' },
-    week: { key: 'week', tpr: 'r604800', label: 'Week' },
-  };
+  const RECENCY = TGT.RECENCY;
+  const SEARCH = TGT.activeProfile();
 
   // ===== Keyboard shortcuts (matched on e.code, layout-independent) ======
   const SHORTCUTS = {
@@ -105,6 +95,31 @@
     '.scaffold-layout__list-item',
     '.jobs-search-results__list-item',
   ];
+  // MEASURED against the live signed-in DOM (throwaway Playwright probe, 2026-08-07),
+  // not guessed. The title link's innerText is DOUBLED — LinkedIn renders a
+  // visually-hidden duplicate ("Foo" + "Foo with verification") — so read the <strong>,
+  // which carries the clean title on its own.
+  const CARD_TITLE_SELECTORS = [
+    'a.job-card-container__link strong',
+    'a.job-card-list__title strong',
+    '.job-card-list__title--link strong',
+    'a.job-card-container__link',
+  ];
+  // Every card state label ("Promoted", "Viewed", "Easy Apply", the posting age, the
+  // location…) is rendered as one of these footer items. Measured shape:
+  //   <li class="job-card-container__footer-item inline-flex align-items-center">
+  //     <span>Promoted</span>
+  //   </li>
+  const CARD_STATE_SELECTORS = [
+    '.job-card-container__footer-item',
+    '.job-card-container__footer-job-state',
+    '.job-card-list__footer-wrapper li',
+    '.job-card-container__footer-wrapper li',
+  ];
+  // Anchored, so a job actually TITLED "Promoted Content Manager" or a company called
+  // "Viewed" can never be mistaken for a state label.
+  const PROMOTED_RE = /^promoted\b/;
+  const VIEWED_RE = /^viewed\b/;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -214,6 +229,139 @@
     return idx;
   }
 
+  function findCardById(id) {
+    if (!id) return null;
+    return getCards().find((c) => c.id && c.id === String(id)) || null;
+  }
+
+  // The state labels on one card, lower-cased. Falls back to whole-card lines if the
+  // footer selectors ever go stale (LinkedIn renames classes freely) — line 0 and 1 are
+  // skipped because they are the doubled title.
+  function cardLabels(li) {
+    const labels = new Set();
+    for (const sel of CARD_STATE_SELECTORS) {
+      let els = [];
+      try { els = li.querySelectorAll(sel); } catch (_) { continue; }
+      for (const el of els) {
+        const t = cleanInline(el.innerText).toLowerCase();
+        if (t && t.length <= 48) labels.add(t);
+      }
+    }
+    if (!labels.size) {
+      const lines = (li.innerText || '').split('\n').map((s) => s.trim()).filter(Boolean);
+      for (const l of lines.slice(2)) if (l.length <= 48) labels.add(l.toLowerCase());
+    }
+    return labels;
+  }
+
+  function cardTitle(li) {
+    const el = firstEl(CARD_TITLE_SELECTORS, li);
+    if (el) {
+      const t = cleanInline(el.innerText);
+      // The bare link (last selector) yields the doubled text; keep only the first half
+      // when it is an exact repetition.
+      if (t) {
+        const half = t.slice(0, Math.floor(t.length / 2)).trim();
+        if (half && t === half + ' ' + half) return half;
+        return t;
+      }
+    }
+    const line = (li.innerText || '').split('\n').map((s) => s.trim()).find(Boolean);
+    return line || '';
+  }
+
+  // Read one card into the plain object targeting.js triages. `unknown: true` means the
+  // card had not rendered — LinkedIn's list is VIRTUALIZED, so an off-screen <li> carries
+  // its job id but no text at all. Never guess from a blank card.
+  function readCard(li) {
+    const id =
+      li.getAttribute('data-occludable-job-id') ||
+      li.getAttribute('data-job-id') ||
+      extractIdFromCard(li);
+    if (!(li.innerText || '').trim()) return { id: id ? String(id) : null, unknown: true };
+    const labels = Array.from(cardLabels(li));
+    return {
+      id: id ? String(id) : null,
+      title: cardTitle(li),
+      promoted: labels.some((l) => PROMOTED_RE.test(l)),
+      viewed: labels.some((l) => VIEWED_RE.test(l)),
+      unknown: false,
+    };
+  }
+
+  // Bring an occluded card into view and wait for its text, so it can be classified.
+  // Scrolling to look at a card before deciding is also what a person does, so this
+  // costs nothing behaviorally.
+  async function ensureCardReadable(li, timeoutMs = 1600) {
+    if ((li.innerText || '').trim()) return true;
+    try { li.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) {}
+    let waited = 0;
+    while (waited < timeoutMs) {
+      await sleep(150);
+      waited += 150;
+      if ((li.innerText || '').trim()) return true;
+    }
+    return false;
+  }
+
+  // Dim a card we stepped over and badge it with the reason (or clear the mark).
+  function markCard(el, reason) {
+    if (!el || !el.classList) return;
+    if (!reason) { el.classList.remove('li-cn-skip'); el.removeAttribute('data-li-cn-skip'); return; }
+    el.classList.add('li-cn-skip');
+    el.setAttribute('data-li-cn-skip', (TGT.REASON_LABEL && TGT.REASON_LABEL[reason]) || reason);
+  }
+  function markSaved(id) {
+    const c = findCardById(id);
+    if (c && c.el && c.el.classList) { c.el.classList.remove('li-cn-skip'); c.el.classList.add('li-cn-saved'); }
+  }
+
+  // ===== Seen set: jobs already written to disk ==========================
+  // Persisted in chrome.storage.local so it survives reloads and whole sessions. A job
+  // enters it ONLY when the service worker confirms the .md actually downloaded — an
+  // attempted-but-failed save must not make a job invisible forever.
+  const SEEN_KEY = 'liCnSeen';
+  const seen = new Set();
+  let seenLoaded = false;
+  const seenReady = new Promise((resolve) => {
+    if (!(typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local)) { seenLoaded = true; resolve(); return; }
+    try {
+      chrome.storage.local.get(SEEN_KEY, (obj) => {
+        if (!chrome.runtime.lastError && obj && obj[SEEN_KEY]) {
+          for (const k of Object.keys(obj[SEEN_KEY])) seen.add(String(k));
+        }
+        seenLoaded = true;
+        console.info('[Copy+Next] seen list loaded:', seen.size, 'jobs');
+        resolve();
+      });
+    } catch (_) { seenLoaded = true; resolve(); }
+  });
+
+  function rememberSeen(job) {
+    if (!job || !job.jobId) return;
+    const id = String(job.jobId);
+    seen.add(id);
+    markSaved(id);
+    if (!(typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local)) return;
+    try {
+      chrome.storage.local.get(SEEN_KEY, (obj) => {
+        if (chrome.runtime.lastError) return;
+        const map = (obj && obj[SEEN_KEY]) || {};
+        map[id] = { at: Date.now(), title: job.title || '', company: job.company || '' };
+        chrome.storage.local.set({ [SEEN_KEY]: TGT.pruneSeen(map, TGT.SKIP && TGT.SKIP.SEEN_MAX) }, () => {
+          if (chrome.runtime.lastError) console.warn('[Copy+Next] seen save:', chrome.runtime.lastError.message);
+        });
+      });
+    } catch (_) {}
+  }
+
+  function forgetSeen() {
+    seen.clear();
+    try { chrome.storage.local.remove(SEEN_KEY, () => {}); } catch (_) {}
+    for (const c of getCards()) if (c.el && c.el.classList) c.el.classList.remove('li-cn-saved');
+    toast('🧹 Cleared the already-saved list');
+  }
+
   // Deliver a real activation (navigation always needs a trusted-equivalent click; synthetic
   // KeyboardEvents can't trigger default actions), but vary the surrounding event stream:
   // 'keyboard' adds focus + Enter key events, 'click' adds a little pointer movement.
@@ -238,34 +386,104 @@
     try { el.click(); } catch (_) {}
   }
 
-  // Advance to the next job. allowPaginate=false (auto-run scope = current page) stops at the
-  // page boundary instead of clicking "next page". modality varies the input event stream.
-  async function advanceOnce(allowPaginate = true, modality = 'click') {
-    let cards = getCards();
-    if (!cards.length) return { ok: false, reason: 'no-cards' };
-    const idx = findCurrentIndex(cards);
-    if (idx === -1) return { ok: false, reason: 'current-not-found' };
+  const skipCfg = () =>
+    (globalThis.__liHumanize && globalThis.__liHumanize.CONFIG.SKIP) ||
+    { SCAN_CAP_MS: 25000, MANUAL_SCAN_CAP_MS: 1800 };
 
-    const nextIdx = idx + 1;
-    if (nextIdx >= cards.length) {
-      cards[cards.length - 1].el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      await sleep(600 + Math.random() * 500);
-      cards = getCards();
+  /**
+   * Scan forward from `startIdx` for the next card worth opening, stepping over the
+   * ones targeting.js rejects (promoted / already saved / already viewed / off-target).
+   *
+   * This is where the "human-mimicking neglect" actually lives. A person does not click
+   * every card and bounce straight back out of the sponsored ones — they run their eye
+   * down the list, register the little "Promoted" tag, and click the one that looks
+   * worth reading. So a skipped card is never opened at all, but it is never free
+   * either: each one costs a `glanceMs()` from the engine, so a run of five rejects
+   * takes a few seconds of scrolling and looking, not a machine-speed burst.
+   */
+  async function pickNextTarget(startIdx, opts) {
+    const { manual = false } = opts || {};
+    const K = skipCfg();
+    const cap = manual ? K.MANUAL_SCAN_CAP_MS : K.SCAN_CAP_MS;
+    const pace = (ms) => (manual ? sleep(ms) : interruptibleSleep(ms));
+    const rand = humanizer.rand || Math.random;
+    const skipped = [];
+    let spent = 0;
+    let nudged = false;
+    let i = startIdx + 1;
+
+    for (;;) {
+      if (!manual && !auto.running) return { stopped: true, skipped };
+      let cards = getCards();
+      if (i >= cards.length) {
+        if (nudged) return { end: true, skipped };
+        // The list is lazy: scroll the tail into view once, then re-query.
+        nudged = true;
+        const last = cards[cards.length - 1];
+        if (last && last.el) { try { last.el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) {} }
+        await pace(600 + Math.random() * 500);
+        cards = getCards();
+        if (i >= cards.length) return { end: true, skipped };
+      }
+
+      let entry = cards[i];
+      await ensureCardReadable(entry.el);
+      // Re-resolve by id: scrolling a virtualized list can replace the element.
+      if (entry.id) entry = findCardById(entry.id) || entry;
+
+      const card = readCard(entry.el);
+      const decision = TGT.decideCard(card, { seen, profile: SEARCH, rand });
+
+      if (decision.action !== 'skip') {
+        markCard(entry.el, null);
+        return {
+          index: i, entry, card, skipped,
+          // A "peek" is only meaningful to the auto-run (open but don't save). On the
+          // manual path there is no save loop, so it collapses to a plain open.
+          action: manual && decision.action === 'peek' ? 'open' : decision.action,
+          reason: decision.reason,
+        };
+      }
+
+      markCard(entry.el, decision.reason);
+      skipped.push({ id: card.id, title: card.title, reason: decision.reason });
+      if (spent < cap) {
+        const g = humanizer.glanceMs ? humanizer.glanceMs().ms : 450 + Math.random() * 500;
+        const take = Math.min(g, cap - spent);
+        spent += take;
+        await pace(take);
+      }
+      i++;
     }
-    if (nextIdx < cards.length) {
-      const target = cards[nextIdx];
-      target.el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      await sleep(120 + Math.random() * 200); // settle micro-pause before activating
-      activate(target.clickable || target.el, modality);
-      return { ok: true, id: target.id };
+  }
+
+  // Advance to the next job WORTH opening. allowPaginate=false (auto-run scope = current
+  // page) stops at the page boundary instead of clicking "next page". modality varies the
+  // input event stream.
+  async function advanceOnce(allowPaginate = true, modality = 'click', opts = {}) {
+    const cards = getCards();
+    if (!cards.length) return { ok: false, reason: 'no-cards', skipped: [] };
+    const idx = findCurrentIndex(cards);
+    if (idx === -1) return { ok: false, reason: 'current-not-found', skipped: [] };
+
+    const pick = await pickNextTarget(idx, opts);
+    if (pick.stopped) return { ok: false, reason: 'stopped', skipped: pick.skipped };
+    if (pick.end) {
+      if (!allowPaginate) return { ok: false, reason: 'end-of-page', skipped: pick.skipped };
+      const nextPage = firstEl(NEXT_PAGE_SELECTORS);
+      if (nextPage && !nextPage.disabled) {
+        activate(nextPage, 'click');
+        return { ok: true, page: true, skipped: pick.skipped };
+      }
+      return { ok: false, reason: 'end-of-list', skipped: pick.skipped };
     }
-    if (!allowPaginate) return { ok: false, reason: 'end-of-page' };
-    const nextPage = firstEl(NEXT_PAGE_SELECTORS);
-    if (nextPage && !nextPage.disabled) {
-      activate(nextPage, 'click');
-      return { ok: true, page: true };
-    }
-    return { ok: false, reason: 'end-of-list' };
+
+    const target = pick.entry;
+    try { target.el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) {}
+    await sleep(120 + Math.random() * 200); // settle micro-pause before activating
+    const live = (target.id && findCardById(target.id)) || target;
+    activate(live.clickable || live.el, modality);
+    return { ok: true, id: live.id, action: pick.action, reason: pick.reason, skipped: pick.skipped };
   }
 
   // Collect everything about the current job ONCE (incl. the live description element,
@@ -320,7 +538,9 @@
     try {
       chrome.runtime.sendMessage({ type: 'li-cn-save-job', filename, markdown }, (resp) => {
         if (chrome.runtime.lastError) { console.warn('[Copy+Next] save msg error:', chrome.runtime.lastError.message); return; }
-        if (resp && resp.ok) console.info('[Copy+Next] saved', resp.path);
+        // Remember the job ONLY once the download is confirmed. Recording on the
+        // attempt would make a job that failed to save invisible to every later run.
+        if (resp && resp.ok) { console.info('[Copy+Next] saved', resp.path); rememberSeen(job); }
         else if (resp) { console.warn('[Copy+Next] save failed:', resp.error); toast('⚠️ .md save failed: ' + resp.error, true); }
         else console.warn('[Copy+Next] save: no response from service worker');
       });
@@ -350,20 +570,9 @@
     }
   }
 
-  // Build the saved-search URL for one recency window (defaults to 24h).
-  function buildSearchUrl(recency) {
-    const r = recency || RECENCY.day;
-    const p = new URLSearchParams();
-    p.set('keywords', SEARCH.keywords);
-    const wt = { onsite: '1', remote: '2', hybrid: '3' }[SEARCH.workplaceType];
-    if (wt) p.set('f_WT', wt); // 'any' -> omitted, so LinkedIn returns every workplace type
-    if (r.tpr) p.set('f_TPR', r.tpr);
-    // geoId is the filter LinkedIn actually honors; the location text is for display.
-    if (SEARCH.location) p.set('location', SEARCH.location);
-    if (SEARCH.geoId) p.set('geoId', SEARCH.geoId);
-    if (SEARCH.sortByDate) p.set('sortBy', 'DD');
-    return 'https://www.linkedin.com/jobs/search/?' + p.toString();
-  }
+  // Build the saved-search URL for one recency window (defaults to 24h). The query
+  // itself is assembled by targeting.js, so it can be unit-tested without a browser.
+  const buildSearchUrl = (recency) => TGT.buildSearchUrl(SEARCH, recency || RECENCY.day);
 
   function handleSearch(recency) {
     const r = recency || RECENCY.day;
@@ -382,8 +591,15 @@
     return { job, wordCount: built.wordCount, copied };
   }
 
-  const auto = { running: false, count: 0, saved: 0, misses: 0 };
+  const auto = { running: false, starting: false, count: 0, saved: 0, misses: 0, peeked: 0, skips: {} };
   let busy = false;
+
+  const tallySkips = (list) => { for (const s of list || []) auto.skips[s.reason] = (auto.skips[s.reason] || 0) + 1; };
+  const skipTotal = () => Object.values(auto.skips).reduce((a, b) => a + b, 0);
+  const skipSummary = () =>
+    Object.entries(auto.skips)
+      .map(([r, n]) => `${n} ${(TGT.REASON_LABEL && TGT.REASON_LABEL[r]) || r}`)
+      .join(', ');
 
   async function handleCopyAndNext() {
     // Invariant: one input -> one action. A new trigger is refused until the
@@ -399,14 +615,22 @@
       // Technique 1 + 2 live here: the engine returns a human-paced, content-scaled,
       // autocorrelated delay to wait before advancing.
       const delay = humanizer.advanceDelayMs({ wordCount: r.wordCount, optionCount: 2, consequence: 'navigate' }).ms;
+      // An explicit keypress always wins — a job you already saved is re-saved (the
+      // filename is idempotent, so it just overwrites) — but say so, so the duplicate
+      // isn't a surprise. Only the AUTO-run silently skips what's already on disk.
+      const dup = r.job && r.job.jobId && seen.has(String(r.job.jobId)) ? ' (already saved — re-saved)' : '';
       if (!r.copied) toast('⚠️ Copy failed', true);
-      else toast(`Copied ✓ · advancing in ${(delay / 1000).toFixed(1)}s`);
+      else toast(`Copied ✓${dup} · advancing in ${(delay / 1000).toFixed(1)}s`);
 
       await sleep(delay);
 
-      const res = await advanceOnce(true, 'click');
-      if (res.ok) toast(res.page ? '→ next page' : '→ next job');
-      else toast('Copied ✓ (no next job to advance to)');
+      // Manual advance skips the same cards the auto-run would, so Alt+C lands on the
+      // next job actually worth reading. The scan is capped tight (MANUAL_SCAN_CAP_MS)
+      // so one keypress still feels like one keypress.
+      const res = await advanceOnce(true, 'click', { manual: true });
+      const past = res.skipped && res.skipped.length ? ` (past ${res.skipped.length} skipped)` : '';
+      if (res.ok) toast((res.page ? '→ next page' : '→ next job') + past);
+      else toast('Copied ✓ (no next job to advance to)' + past);
     } catch (e) {
       toast('⚠️ ' + (e && e.message ? e.message : e), true);
     } finally {
@@ -479,15 +703,22 @@
     } catch (_) {}
   }
 
-  function startAuto() {
-    if (auto.running) return;
+  async function startAuto() {
+    if (auto.running || auto.starting) return;
     if (busy) { console.warn('[Copy+Next] auto refused: an action is in progress'); toast('⏳ Finish the current action first'); return; }
     if (isBlockedPage()) { console.warn('[Copy+Next] auto refused: verification/checkpoint page'); toast('⚠️ Not on a normal jobs page — auto-run refused', true); return; }
     if (!getCards().length) { console.warn('[Copy+Next] auto refused: no job cards found'); toast('⚠️ No job list detected — open a Jobs search first', true); return; }
-    auto.running = true; auto.count = 0; auto.saved = 0; auto.misses = 0;
+    // chrome.storage is async: without this the FIRST run of a session would skip
+    // nothing, because the already-saved list hadn't arrived yet.
+    auto.starting = true;
+    try {
+      if (!seenLoaded) { toast('… loading your already-saved list'); await seenReady; }
+    } finally { auto.starting = false; }
+    if (auto.running) return;
+    auto.running = true; auto.count = 0; auto.saved = 0; auto.misses = 0; auto.peeked = 0; auto.skips = {};
     setAutoBtn(true);
-    console.info('[Copy+Next] auto-run started');
-    toast('▶ Auto-run started — Stop with the button, Esc, or Alt+A');
+    console.info('[Copy+Next] auto-run started;', seen.size, 'jobs already saved');
+    toast(`▶ Auto-run started (${seen.size} already saved) — Stop with the button, Esc, or Alt+A`);
     runAutoLoop();
   }
 
@@ -495,7 +726,7 @@
     const was = auto.running;
     auto.running = false;
     setAutoBtn(false);
-    if (was && !silent) toast(`⏹ Auto-run stopped — ${auto.saved} saved this run`);
+    if (was && !silent) toast(`⏹ Auto-run stopped — ${auto.saved} saved, ${skipTotal()} skipped`);
   }
 
   function toggleAuto() { if (auto.running) stopAuto(); else startAuto(); }
@@ -504,6 +735,9 @@
     const B = (globalThis.__liHumanize && globalThis.__liHumanize.CONFIG.BATCH) || { MAX_JOBS: 40, MAX_SESSION_MS: 900000 };
     const started = Date.now();
     let expectedId = getCurrentJobId(); // the job currently open (already loaded)
+    // When the scan lands on a "peek", the NEXT iteration opens that job but must not
+    // save it — it's a card we deliberately decided wasn't for us.
+    let peekReason = null;
     await interruptibleSleep(1500 + Math.random() * 2500); // orientation pause on landing
     try {
       while (auto.running) {
@@ -521,31 +755,64 @@
           continue;
         }
 
-        const r = await copyAndSaveCurrent();
-        if (!r) {
-          if (++auto.misses >= 3) { toast('⏹ Auto-run: no job description (3×) — stopping', true); break; }
-          await interruptibleSleep(3000 + Math.random() * 5000);
-          continue;
+        let gapMs;
+        const openId = getCurrentJobId();
+        if (!peekReason && openId && seen.has(String(openId))) {
+          // The job already open when the run STARTED never went through the scan, so
+          // triage it here too — otherwise the first job of every run gets re-saved.
+          auto.skips.seen = (auto.skips.seen || 0) + 1;
+          auto.misses = 0;
+          markSaved(openId);
+          toast('↷ already saved — moving on');
+          gapMs = humanizer.glanceMs ? humanizer.glanceMs().ms : 700;
+        } else if (peekReason) {
+          // A peek: open it, skim it, move on. Nothing is saved and nothing enters the
+          // seen list — we didn't write it, so a later run is free to reconsider it.
+          const j = collectJob();
+          const d = humanizer.peekDwellMs ? humanizer.peekDwellMs({ wordCount: j ? j.wordCount : 0 }).ms : 3000;
+          auto.peeked++;
+          auto.misses = 0;
+          toast(`👀 skimming a ${peekReason === 'promoted-peek' ? 'promoted' : 'off-target'} post — not saving`);
+          gapMs = d;
+        } else {
+          const r = await copyAndSaveCurrent();
+          if (!r) {
+            if (++auto.misses >= 3) { toast('⏹ Auto-run: no job description (3×) — stopping', true); break; }
+            await interruptibleSleep(3000 + Math.random() * 5000);
+            continue;
+          }
+          auto.misses = 0; auto.count++; if (r.copied) auto.saved++;
+          const gap = humanizer.batchGapMs ? humanizer.batchGapMs({ wordCount: r.wordCount }) : { ms: 8000, idle: 0 };
+          gapMs = gap.ms;
+          toast(`▶ ${auto.saved} saved · next in ${Math.round(gap.ms / 1000)}s${gap.idle ? ' (taking a break)' : ''} · Esc to stop`);
         }
-        auto.misses = 0; auto.count++; if (r.copied) auto.saved++;
 
-        const gap = humanizer.batchGapMs ? humanizer.batchGapMs({ wordCount: r.wordCount }) : { ms: 8000, idle: 0 };
-        toast(`▶ ${auto.saved} saved · next in ${Math.round(gap.ms / 1000)}s${gap.idle ? ' (taking a break)' : ''} · Esc to stop`);
         maybeFidget();
-        await interruptibleSleep(gap.ms); if (!auto.running) break;
+        await interruptibleSleep(gapMs); if (!auto.running) break;
 
         const res = await advanceOnce(false, humanizer.nextModality ? humanizer.nextModality() : 'click');
+        tallySkips(res.skipped);
         if (!res.ok) {
+          if (res.reason === 'stopped') break;
           toast(res.reason === 'end-of-page'
-            ? `⏹ Auto-run done — reached end of page (${auto.saved} saved)`
+            ? `⏹ Auto-run done — end of page · ${auto.saved} saved, ${skipTotal()} skipped`
             : `⏹ Auto-run: can't advance (${res.reason}) — ${auto.saved} saved`);
           break;
         }
+        peekReason = res.action === 'peek' ? res.reason : null;
         expectedId = res.id; // next loop waits until THIS job is the one actually loaded
       }
     } catch (e) {
       toast('⏹ Auto-run error: ' + (e && e.message ? e.message : e), true);
     } finally {
+      // A page where EVERYTHING was filtered out looks identical to a broken run, so
+      // say which filter ate it and how to turn that filter off.
+      if (!auto.count && skipTotal()) {
+        console.info('[Copy+Next] auto-run skipped everything:', JSON.stringify(auto.skips));
+        toast(`⏹ Nothing new here — skipped ${skipSummary()}. Loosen SKIP in targeting.js or clear the saved list.`, true);
+      } else if (skipTotal()) {
+        console.info(`[Copy+Next] auto-run: ${auto.saved} saved, ${auto.peeked} peeked, skipped ${JSON.stringify(auto.skips)}`);
+      }
       stopAuto(true);
     }
   }
@@ -681,6 +948,23 @@
     getCards: () => getCards().map((c) => ({ id: c.id })),
     getCurrentJobId,
     actor: humanizer.actor,
-    version: '1.4.0',
+    // --- targeting / triage -------------------------------------------------
+    targeting: TGT,
+    // Classify every card on the page exactly as the auto-run would. The one call to
+    // make in the console after a LinkedIn markup change: if `promoted` and `viewed`
+    // come back all-false on a page that visibly has them, the selectors have drifted.
+    probeCards: () =>
+      getCards().map((c) => {
+        const card = readCard(c.el);
+        return { ...card, decision: TGT.decideCard(card, { seen, profile: SEARCH, rand: Math.random }) };
+      }),
+    seen: {
+      size: () => seen.size,
+      has: (id) => seen.has(String(id)),
+      list: () => Array.from(seen),
+      clear: forgetSeen,
+      loaded: () => seenLoaded,
+    },
+    version: '1.5.0',
   };
 })();
