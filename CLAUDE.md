@@ -193,6 +193,40 @@ SessionEnvelope layer made real, and it is the *only* sanctioned loop.
 - **Serial:** `await`s each job's full copy → gap → advance before the next; the
   one-input→one-action budget still governs every internal step.
 
+## Targeting & neglect (v1.5)
+
+A third pure module, `extension/targeting.js` (`globalThis.__liTargeting`), owns every
+*decision* about which cards are worth opening; `humanize.js` owns how long each
+decision takes; `content.js` remains a driver that invents neither.
+
+- **Two accuracy layers.** A keyword query also matches DESCRIPTION text, so it can never
+  be precise on its own. Recall is server-side (a quoted boolean OR); precision is
+  client-side (`relevanceOf` over the card TITLE). Exclusion is deliberately *not* a
+  boolean `NOT` in the query — that would match description text and silently drop good
+  jobs. Geo must be **pinned**: an unset location makes LinkedIn reuse a sticky region, so
+  the same query returns a different country run to run. geoIds are read back from
+  LinkedIn's typeahead, never guessed.
+- **Neglect is modelled, not hard-coded.** Skipping is the *absence* of a click — the scan
+  jumps ahead to the next good card rather than opening and bouncing out of bad ones — but
+  it is never free: every skipped card costs a `glanceMs()` drawn from the same AR(1)
+  tempo, and a small `*_PEEK_PROB` occasionally opens one anyway (skimmed, never saved,
+  never recorded). A 100%-accurate, zero-cost filter would be a NEW bot tell, which is why
+  invariant #3 below now names it.
+- **Fail open, always.** No title, no filter configured, or an unrendered card ⇒ open it.
+  LinkedIn's list is VIRTUALIZED: an off-screen `<li>` carries its job id but no text, so
+  classifying a blank card would skip the entire page while every unit test still passed.
+  Classification must scroll-into-view → wait for text → re-read → decide.
+- **"Seen" means written.** A job enters the persisted seen set only when the service
+  worker confirms the download; recording on the attempt would hide a job forever after a
+  failed save. Peeked jobs never enter it — they weren't written.
+- **Selectors are measured, not guessed.** The card markup in `content.js`
+  (`CARD_TITLE_SELECTORS`, `CARD_STATE_SELECTORS`) came from a live Playwright probe. Two
+  measured facts that are easy to get wrong: the title link's `innerText` is DOUBLED by a
+  visually-hidden span (read the `<strong>`), and state labels are `<span>`s inside
+  `li.job-card-container__footer-item`. Match them ANCHORED (`/^promoted\b/`) so a job
+  titled "Promoted Content Manager" is never misread. Re-probe with
+  `__liCopyNext.probeCards()` after any LinkedIn markup change.
+
 ## Hard invariants (enforce in code; assert in tests)
 
 1. One input event → exactly one semantic action. Action *n+1* never starts before
@@ -213,6 +247,9 @@ SessionEnvelope layer made real, and it is the *only* sanctioned loop.
      (the auto-run is *bounded* by hard job + time caps, so this still holds)
    - identical mouse paths or exact-center clicks; identical typing rhythm across
      fields
+   - **a filter that is free or perfect**: rejecting a card in ~0 ms, or skipping 100% of
+     a category (promoted / off-target) with no exceptions, forever. Every skip costs a
+     sampled glance, and the peek probabilities keep the rate off 100% (v1.5).
 
 ---
 

@@ -83,5 +83,41 @@ let modSame = true, sawKb = false, sawClick = false;
 for (let i = 0; i < 200; i++) { const m = modA.nextModality(); if (m !== modB.nextModality()) modSame = false; if (m === 'keyboard') sawKb = true; if (m === 'click') sawClick = true; }
 check('modality mixes both keyboard and click, deterministically', modSame && sawKb && sawClick);
 
+// --- Glance / peek: the cost of passing over a card the filter rejected ---
+// A skip must never be free (a 0 ms rejection is a new bot tell) and never uniform.
+const hg = H.createHumanizer(2468);
+const glances = [];
+for (let i = 0; i < 3000; i++) glances.push(hg.glanceMs().ms);
+const gMed = [...glances].sort((a, b) => a - b)[Math.floor(glances.length / 2)];
+check('glance is never free and never sub-human', Math.min(...glances) >= H.CONFIG.SKIP.GLANCE_MIN_MS - 1, `min=${Math.round(Math.min(...glances))}ms`);
+check('glance is bounded', Math.max(...glances) <= H.CONFIG.SKIP.GLANCE_MAX_MS + 1, `max=${Math.round(Math.max(...glances))}ms`);
+check('glance median is a plausible eye-flick (0.3–2 s)', gMed >= 300 && gMed <= 2000, `median=${Math.round(gMed)}ms`);
+check('glance has real variance (not a constant)', sd(glances) / mean(glances) > 0.2, `CV=${(sd(glances) / mean(glances)).toFixed(2)}`);
+check('a run of 5 skips is seconds, not a machine burst', gMed * 5 >= 1500, `5x median=${Math.round(gMed * 5)}ms`);
+
+// Glances share the SAME latent tempo as advances, so a slow stretch slows the skips too.
+// Interleaving the two calls is the point: if glanceMs() kept its own tempo state, the
+// tempo each call sees would be independent and this correlation would collapse.
+const hmix = H.createHumanizer(1357);
+const mixTempo = [];
+for (let i = 0; i < 3000; i++) {
+  mixTempo.push(i % 2 ? hmix.glanceMs().tempo : hmix.advanceDelayMs({ wordCount: 300 }).tempo);
+}
+check('glances and advances share one AR(1) tempo (interleaved series stays autocorrelated)',
+  autocorr1(mixTempo) > 0.3, `r1=${autocorr1(mixTempo).toFixed(3)}`);
+
+const hp = H.createHumanizer(864);
+const peekShort = mean(Array.from({ length: 1500 }, () => hp.peekDwellMs({ wordCount: 30 }).ms));
+const hp2 = H.createHumanizer(864);
+const peekLong = mean(Array.from({ length: 1500 }, () => hp2.peekDwellMs({ wordCount: 900 }).ms));
+check('peek dwell scales with the post it is skimming', peekLong > peekShort * 1.15, `30w=${Math.round(peekShort)}ms 900w=${Math.round(peekLong)}ms`);
+check('peek dwell is bounded and never instant',
+  peekShort >= H.CONFIG.SKIP.PEEK_MIN_MS - 1 && peekLong <= H.CONFIG.SKIP.PEEK_CAP_MS + 1);
+
+const r1 = H.createHumanizer(31), r2 = H.createHumanizer(31);
+let randSame = true;
+for (let i = 0; i < 200; i++) if (r1.rand() !== r2.rand()) { randSame = false; break; }
+check('exposed rand() is seeded and deterministic (peeks are reproducible)', randSame);
+
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILED'}  (seed sample actor: ${JSON.stringify(h.actor, (k, v) => typeof v === 'number' ? +v.toFixed(3) : v)})`);
 process.exit(failures === 0 ? 0 : 1);

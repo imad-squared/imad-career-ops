@@ -41,6 +41,29 @@
   50% { box-shadow: 0 2px 18px rgba(178, 64, 32, 0.95); }
 }
 
+/* Cards the targeting filter stepped over: dimmed, with the reason badged on them.
+   Nothing is hidden or removed — the skip stays visible and auditable, and the card is
+   still fully clickable by hand. LinkedIn's own <li> already carries `relative`; the
+   declaration below just makes the badge's anchor explicit rather than inherited. */
+.li-cn-skip { position: relative; opacity: 0.45; filter: grayscale(0.55); }
+.li-cn-skip::after,
+.li-cn-saved::after {
+  position: absolute;
+  right: 8px;
+  bottom: 6px;
+  z-index: 5;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font: 600 10px/1.45 -apple-system, system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #fff;
+  pointer-events: none;
+}
+.li-cn-skip::after { content: attr(data-li-cn-skip); background: #5c5c5c; }
+.li-cn-saved { position: relative; }
+.li-cn-saved::after { content: "✓ saved"; background: #2f5233; }
+
 #li-cn-toast {
   position: fixed;
   right: 20px;
